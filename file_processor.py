@@ -1,3 +1,5 @@
+import re
+
 from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 
@@ -55,6 +57,17 @@ def md_splitter(md_content):
     #     print("=" * 30)
     
     return final_chunks
+
+def clean_markdown(text):
+    # 移除圖片語法: ![替代文字](圖片連結)
+    text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
+    # 移除連結語法，保留文字: [連結文字](連結) -> text
+    text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', text)
+    # 移除上標/下標或特殊 HTML 標籤
+    text = re.sub(r'<.*?>', '', text)
+    # 移除過多的空格與換行
+    text = re.sub(r'\n\s*\n', '\n', text)
+    return text.strip()
 
 class Tags(BaseModel):
     tags: list[str] = Field(description="與文本有關的標籤列表")

@@ -1,15 +1,19 @@
-import os
+import os, asyncio
 from typing import List
 
-from haystack import Document, Pipeline
+from opencc import OpenCC
+from haystack import Document, Pipeline, component
 from haystack.utils import Secret
 from haystack.dataclasses import ChatMessage
 from haystack.components.builders import ChatPromptBuilder
+from haystack.components.converters import PyPDFToDocument
+from haystack.components.preprocessors import DocumentCleaner, DocumentSplitter
+from haystack.components.writers import DocumentWriter
 from haystack.components.generators.chat import OpenAIChatGenerator
 from haystack.components.embedders import SentenceTransformersTextEmbedder, SentenceTransformersDocumentEmbedder
 from neo4j_haystack import Neo4jEmbeddingRetriever, Neo4jDocumentStore
 
-from file_processor import md_splitter
+from file_processor import md_splitter, clean_markdown
 from config import OPENAI_API_KEY, NEO4J_PASSWORD
 
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
@@ -23,8 +27,9 @@ document_store = Neo4jDocumentStore(
     index="document-embeddings",
 )
 
-def upload_to_neo4j(documents: list):
-    document_embedder = SentenceTransformersDocumentEmbedder(model="sentence-transformers/all-MiniLM-L6-v2")  
+# 目前用的上傳方法
+def upload_to_neo4j(documents: list[Document]):
+    document_embedder = SentenceTransformersDocumentEmbedder(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")  
     document_embedder.warm_up()
     documents_with_embeddings = document_embedder.run(documents)
 
@@ -32,6 +37,47 @@ def upload_to_neo4j(documents: list):
 
     print(document_store.count_documents())
 
+# 替 chunk 加上 metadata 並轉為 Document 物件
+def add_metadata(md_documents: list[Document], source_file: str) -> list[Document]:
+    documents = list()
+    for doc in md_documents:
+        documents.append(
+            Document(
+                content=clean_markdown(doc.page_content),
+                meta={
+                    "content_type": "textbook",
+                    "source_file": source_file
+                }
+            )
+        )
+        # doc.meta["page"]
+    return documents
+
+@component
+class MetadataEnricher:
+    @component.output_types(documents=list[Document])
+    def run(self, documents: list[Document]):
+        for doc in documents:
+            doc.meta["kg_label"] = "DomainKG"
+            doc.meta["source_type"] = "pdf"
+        return {"documents": documents}
+# 暫時不用
+def upload_to_vector_db(file_path: list):
+    pipeline = Pipeline()
+    pipeline.add_component("converter", PyPDFToDocument())
+    pipeline.add_component("cleaner", DocumentCleaner())
+    pipeline.add_component("splitter", DocumentSplitter(split_by="sentence", split_length=1))   
+    pipeline.add_component("enricher", MetadataEnricher())
+    pipeline.add_component("embedder", SentenceTransformersDocumentEmbedder(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"))
+    pipeline.add_component("writer", DocumentWriter(document_store=document_store))
+
+    pipeline.connect("converter.documents", "cleaner.documents")
+    pipeline.connect("cleaner.documents", "splitter.documents")
+    pipeline.connect("splitter.documents", "enricher.documents")
+    pipeline.connect("enricher.documents", "embedder.documents")
+    pipeline.connect("embedder.documents", "writer.documents")
+
+    pipeline.run({"converter": {"sources": file_path}})
 
 async def neo4j_retriever(question: str) -> str:
     template = [
@@ -54,7 +100,7 @@ async def neo4j_retriever(question: str) -> str:
     gpt_chat = OpenAIChatGenerator(api_key=Secret.from_env_var("OPENAI_API_KEY"), model="gpt-4o-mini")
 
     pipeline = Pipeline()
-    pipeline.add_component("text_embedder", SentenceTransformersTextEmbedder(model="sentence-transformers/all-MiniLM-L6-v2"))
+    pipeline.add_component("text_embedder", SentenceTransformersTextEmbedder(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"))
     pipeline.add_component("retriever", Neo4jEmbeddingRetriever(document_store=document_store))
     pipeline.add_component("prompt_builder", prompt_builder)
     pipeline.add_component("llm", gpt_chat)
@@ -71,7 +117,17 @@ async def neo4j_retriever(question: str) -> str:
         include_outputs_from=["retriever", "llm"]
     )
 
-    return result["llm"]["replies"][0]._content[0].text
+    return result
+    # return result["llm"]["replies"][0]._content[0].text
+
+async def main():
+    res = await neo4j_retriever("請問有哪些git指令可以做分支合併？")
+    print(res)
+    retrieved_docs = res["retriever"]["documents"]
+    for doc in retrieved_docs:
+        print(doc.content[:200])
+    print("="*30)
+    print(res["llm"]["replies"][0]._content[0].text)
 
 if __name__ == '__main__':
     try:
@@ -81,14 +137,11 @@ if __name__ == '__main__':
         print("Error: The specified file was not found.")
 
     md_documents = md_splitter(md_content)
-    documents = [Document(content=doc.page_content) for doc in md_documents]
+    # documents = [Document(content=clean_markdown(doc.page_content)) for doc in md_documents]
+    documents = add_metadata(md_documents, "[06]版本控制.pdf")
 
     upload_to_neo4j(documents)
 
-    # res = neo4j_retriever("請問有哪些git指令可以做分支合併？")
-    # print(res)
-    # retrieved_docs = res["retriever"]["documents"]
-    # for doc in retrieved_docs:
-    #     print(doc.content[:200])
-    # print("="*30)
-    # print(res["llm"]["replies"][0]._content[0].text)
+    # upload_to_vector_db(["C:\\Users\\shanyiii\\Desktop\\mine\\1141軟體工程\\[06]版本控制.pdf"])
+
+    # asyncio.run(main())
