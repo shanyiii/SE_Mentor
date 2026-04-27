@@ -1,11 +1,17 @@
-import re, ast
+import re, ast, time, random
 from openai import OpenAI
 
 from file_processor import clean_markdown, md_splitter
 from neo4j_impoter import Neo4jImoprter, TripleList
-from config import NEO4J_PASSWORD
+from common import NEO4J_URI
+from config import NEO4J_PASSWORD, GEMINI_API_KEY
+from google import genai
+from google.genai import types
+from google.genai.errors import ClientError
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-client = OpenAI()
+# client = OpenAI()
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 def entities_extraction(user_input):
     prompt = """
@@ -36,15 +42,22 @@ def entities_extraction(user_input):
 	請直接輸出一個 Python List，不需任何額外解釋。
     """
 
-    res = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role":"system", "content":prompt},
-            {"role":"user", "content":user_input}
-        ]
+    # res = client.chat.completions.create(
+    #     model="gpt-4o-mini",
+    #     messages=[
+    #         {"role":"system", "content":prompt},
+    #         {"role":"user", "content":user_input}
+    #     ]
+    # )
+
+    res = client.models.generate_content(
+        model="gemini-2.0-flash",
+        config=types.GenerateContentConfig(system_instruction=prompt),
+        contents=user_input
     )
 
-    entities = re.sub(r'[\r\n]', '', res.choices[0].message.content)
+    # entities = re.sub(r'[\r\n]', '', res.choices[0].message.content)
+    entities = re.sub(r'[\r\n]', '', res.text)
     # print(entities)
 
     match = re.search(r"\[.*?\]", entities)
@@ -57,6 +70,11 @@ def entities_extraction(user_input):
         print("找不到 list")
         return None
 
+@retry(
+    stop=stop_after_attempt(5),            # 最多重試 5 次
+    wait=wait_exponential(multiplier=1, min=5, max=30), # 每次等待時間呈指數增加 (2秒, 4秒, 8秒...)
+    retry=retry_if_exception_type(ClientError) # 只有遇到 API ClientError 才重試
+)
 def relations_extraction(source_file, entities_list, user_input):
     prompt = f"""
     # Role
@@ -96,21 +114,31 @@ def relations_extraction(source_file, entities_list, user_input):
     </article>
     """
 
-    res = client.responses.parse(
-        model="gpt-4o-mini",
-        input=[
-            {"role":"system", "content":prompt},
-            {"role":"user", "content":input_data}
-        ],
-        text_format=TripleList
+    # res = client.responses.parse(
+    #     model="gpt-4o-mini",
+    #     input=[
+    #         {"role":"system", "content":prompt},
+    #         {"role":"user", "content":input_data}
+    #     ],
+    #     text_format=TripleList
+    # )
+
+    res = client.models.generate_content(
+        model="gemini-2.0-flash",
+        config=types.GenerateContentConfig(
+            system_instruction=prompt,
+            response_mime_type="application/json",
+            response_schema=TripleList,
+        ),
+        contents=input_data
     )
     # print(res.output_parsed)
-    print("關係抽取完成")
-    return res.output_parsed
+    # print(res.text)
+    return res.parsed
 
 if __name__ == '__main__':
     try:
-        with open("md_files\\shorter_markdown_test.md", 'r', encoding='utf-8') as input_file:
+        with open("md_files\\ch7_markdown.md", 'r', encoding='utf-8') as input_file:
             md_content = input_file.read()
     except FileNotFoundError:
         print("Error: The specified file was not found.")
@@ -121,17 +149,23 @@ if __name__ == '__main__':
 
     page_entities_list = list()
     for doc in md_documents:
-        page_entities = entities_extraction(doc.page_content)
-        if page_entities:
-            page_entities_list.append(page_entities)
+        try:
+            page_entities = entities_extraction(doc.page_content)
+            if page_entities:
+                page_entities_list.append(page_entities)
+            time.sleep(random.uniform(0.5, 1.5))
+        except Exception as e:
+            time.sleep(10)
     
     entities_list = list(set(entity.lower() for page_entities in page_entities_list for entity in page_entities))
     print("實體抽取完成")
     # print(entities_list)
 
-    triple_list = relations_extraction("[06]版本控制.pdf", entities_list, cleaned_md)
+    source_file = "[07]軟體設計-系統設計.pdf"
+    triple_list = relations_extraction(source_file, entities_list, cleaned_md)
+    print("關係抽取完成")
     
-    importer = Neo4jImoprter(uri="neo4j://localhost:7687", username="neo4j", password=NEO4J_PASSWORD)
+    importer = Neo4jImoprter(uri=NEO4J_URI, username="neo4j", password=NEO4J_PASSWORD)
     try:
         if importer.connect():
             if_success = importer.upload_triples(triple_list)

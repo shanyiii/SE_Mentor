@@ -117,30 +117,86 @@ async def neo4j_retriever(question: str) -> str:
         include_outputs_from=["retriever", "llm"]
     )
 
+    # return result
+    return result["llm"]["replies"][0]._content[0].text
+
+async def neo4j_generate_notes(concept: str) -> str:
+    template = [
+        ChatMessage.from_user(
+            """
+            請根據提供的「軟體工程」教材內容，針對指定的概念，生成一份筆記供學生學習。
+            筆記內容須包含：
+            - 關鍵概念解說
+            - 相關範例
+            - 重點整理
+            筆記內容必須清楚易懂，必要時可使用表格、引用等方式呈現。
+            僅輸出筆記內容，並使用台灣繁體中文。
+
+            Context:
+            {% for document in documents %}
+                {{ document.content }}
+            {% endfor %}
+
+            Concept: {{concept}}
+            Answer:
+            """
+        )
+    ]
+
+    prompt_builder = ChatPromptBuilder(template=template, required_variables=["concept"])
+    gpt_chat = OpenAIChatGenerator(api_key=Secret.from_env_var("OPENAI_API_KEY"), model="gpt-4o-mini")
+
+    pipeline = Pipeline()
+    pipeline.add_component("text_embedder", SentenceTransformersTextEmbedder(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"))
+    pipeline.add_component("retriever", Neo4jEmbeddingRetriever(document_store=document_store))
+    pipeline.add_component("prompt_builder", prompt_builder)
+    pipeline.add_component("llm", gpt_chat)
+
+    pipeline.connect("text_embedder.embedding", "retriever.query_embedding")
+    pipeline.connect("retriever.documents", "prompt_builder.documents")
+    pipeline.connect("prompt_builder.prompt", "llm.messages")
+
+    result = pipeline.run(
+        data={
+            "text_embedder": {"text": concept}, 
+            "prompt_builder": {"concept": concept}
+        },
+        include_outputs_from=["retriever", "llm"]
+    )
+
     return result
-    # return result["llm"]["replies"][0]._content[0].text
 
 async def main():
-    res = await neo4j_retriever("請問有哪些git指令可以做分支合併？")
-    print(res)
-    retrieved_docs = res["retriever"]["documents"]
-    for doc in retrieved_docs:
-        print(doc.content[:200])
+    # res = await neo4j_retriever("請問有哪些git指令可以做分支合併？")
+    res = await neo4j_generate_notes("Git Commits、Git Pull、Git Branches")
+    # print(res)
+    # retrieved_docs = res["retriever"]["documents"]
+    # for doc in retrieved_docs:
+    #     print(doc.content[:200])
     print("="*30)
     print(res["llm"]["replies"][0]._content[0].text)
 
-if __name__ == '__main__':
+async def upload_2_vectordb(chapter, textbook_name):
     try:
-        with open("md_files\\marker_test_output.md", 'r', encoding='utf-8') as input_file:
+        with open(f"md_files\\ch{chapter}_markdown.md", 'r', encoding='utf-8') as input_file:
             md_content = input_file.read()
     except FileNotFoundError:
         print("Error: The specified file was not found.")
+        return
 
     md_documents = md_splitter(md_content)
     # documents = [Document(content=clean_markdown(doc.page_content)) for doc in md_documents]
-    documents = add_metadata(md_documents, "[06]版本控制.pdf")
+    documents = add_metadata(md_documents, f"{textbook_name}.pdf")
 
     upload_to_neo4j(documents)
+
+if __name__ == '__main__':
+    # file_names = ["[03]使用者故事分析", "[04]敏捷開發方法", "[05]基礎專案管理與看板", "[07]軟體設計-系統設計", "[08]軟體設計-模組設計", "[09]軟體測試", "[10]進階軟體測試", "[11]DevOps自動化建置管理"]
+    # chapters = [3, 4, 5, 7, 8, 9, 10, 11]
+    file_names = ["[07]軟體設計-系統設計"]
+    chapters = [7]
+    for file_name, ch in zip(file_names, chapters):
+        asyncio.run(upload_2_vectordb(ch, file_name))
 
     # upload_to_vector_db(["C:\\Users\\shanyiii\\Desktop\\mine\\1141軟體工程\\[06]版本控制.pdf"])
 

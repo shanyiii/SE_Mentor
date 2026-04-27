@@ -63,12 +63,14 @@ async def generate_quiz_kg() -> str:
     template = [
         ChatMessage.from_user(
             """
-            你是一個專業的「軟體工程」課程教授，請根據以下提供的教材內容，針對「版本控制」這個核心概念設計三題單選題。
+            你是一個專業的「軟體工程」課程教授，請根據以下提供的教材內容，針對指定的核心概念設計三題單選題。
 
             【出題要求】：
             1. 題目必須具備鑑別度，測驗學生對該概念的理解而非單純記憶。
             2. 每一題有 4 個選項，並標註正確答案與詳細解析。
             3. 請替每一道題目備註對應的核心概念。
+
+            Concept: {{concept}}
 
             Context:
             {% for document in documents %}
@@ -78,7 +80,7 @@ async def generate_quiz_kg() -> str:
         )
     ]
 
-    prompt_builder = ChatPromptBuilder(template=template)
+    prompt_builder = ChatPromptBuilder(template=template, required_variables=["concept"])
     gpt_chat = OpenAIChatGenerator(
         api_key=Secret.from_env_var("OPENAI_API_KEY"), 
         model="gpt-4o-mini",
@@ -97,7 +99,8 @@ async def generate_quiz_kg() -> str:
 
     result = pipeline.run(
         data={
-            "text_embedder": {"text": core_nodes_str}
+            "text_embedder": {"text": core_nodes_str},
+            "prompt_builder": {"concept": core_nodes_str}
         },
         include_outputs_from=["retriever", "llm"]
     )

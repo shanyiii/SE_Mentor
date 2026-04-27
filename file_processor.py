@@ -26,13 +26,14 @@ set_env(
     }
 )
 
-def pdf2md():
+def pdf2md(file_path, chapter):
     converter = PdfConverter(
         artifact_dict=create_model_dict(),
     )
-    rendered = converter(FILEPATH)
+    rendered = converter(file_path)
     markdown_output = rendered.markdown
-    with open("marker_test_output.md", "w", encoding="utf-8") as f:
+    output_name = f"md_files\\{chapter}_markdown.md"
+    with open(output_name, "w", encoding="utf-8") as f:
         f.write(markdown_output)
 
 def md_splitter(md_content):
@@ -90,3 +91,12 @@ def get_tags_from_gpt(course_name, level, doc_content):
     answer = chain.invoke({"course_name": course_name, "level": level, "content": doc_content})
 
     return answer
+
+if __name__ == '__main__':
+    # "[03]使用者故事分析", "[04]敏捷開發方法", "[05]基礎專案管理與看板", 
+    # file_names = ["[07]軟體設計-系統設計", "[08]軟體設計-模組設計", "[09]軟體測試", "[10]進階軟體測試", "[11]DevOps自動化建置管理"]
+    # chapters = [7, 8, 9, 10, 11]
+    file_names = ["[07]軟體設計-系統設計"]
+    chapters = [7]
+    for file_name, ch in zip(file_names, chapters):
+        pdf2md(f"C:\\Users\\shanyiii\\Desktop\\mine\\1141軟體工程\\slides\\{file_name}.pdf", f"ch{ch}")

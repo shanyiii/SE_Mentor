@@ -17,34 +17,51 @@ class QuestionList(BaseModel):
     questions: list[Question]
 
 async def generate_quiz_llm():
-    file = client.files.create(
-        file=open("md_files\\marker_test_output.md", "rb"),
-        purpose="user_data"
-    )
+    # file = client.files.create(
+    #     file=open("md_files\\marker_test_output.md", "rb"),
+    #     purpose="user_data"
+    # )
+    core_concept = "需求擷取、終端機命令列指令、敏捷開發"
 
+    # prompt = f"""
+    # 你是一個專業的「軟體工程」課程教授，請根據以下提供的教材內容，針對核心概念設計三題單選題。
+
+    # 【出題要求】：
+    # 1. 題目必須具備鑑別度，測驗學生對該概念的理解而非單純記憶。
+    # 2. 每一題有 4 個選項，並標註正確答案與詳細解析。
+    # 3. 請替每一道題目備註對應的核心概念。
+    # """
     prompt = f"""
-    你是一個專業的「軟體工程」課程教授，請根據以下提供的教材內容，針對核心概念設計三題單選題。
+    你是一個專業的「軟體工程」課程教授，請針對以下提供的針對核心概念設計三題單選題。
 
     【出題要求】：
     1. 題目必須具備鑑別度，測驗學生對該概念的理解而非單純記憶。
     2. 每一題有 4 個選項，並標註正確答案與詳細解析。
     3. 請替每一道題目備註對應的核心概念。
     """
-
     res = client.responses.parse(
         model="gpt-4o-mini",
         input=[
             {"role":"system", "content":prompt},
-            {"role":"user", "content":[
-                    {
-                        "type": "input_file",
-                        "file_id": file.id,
-                    }
-                ]
-            }
+            {"role":"user", "content":core_concept}
         ],
         text_format=QuestionList
     )
+
+    # res = client.responses.parse(
+    #     model="gpt-4o-mini",
+    #     input=[
+    #         {"role":"system", "content":prompt},
+    #         {"role":"user", "content":[
+    #                 {
+    #                     "type": "input_file",
+    #                     "file_id": file.id,
+    #                 }
+    #             ]
+    #         }
+    #     ],
+    #     text_format=QuestionList
+    # )
     q_dicts = [dict(q) for q in res.output_parsed.questions]
     return q_dicts
 

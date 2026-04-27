@@ -43,30 +43,30 @@ class Neo4jImoprter:
             logger.info("Neo4j connection closed")
 
     def upload_triples(self, triple_list: TripleList) -> bool:
-            try:
-                with self.driver.session() as session:
-                    session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE")
+        try:
+            with self.driver.session() as session:
+                session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE")
 
-                    data_to_upload = [t.model_dump() for t in triple_list.triples]
-                    
-                    cypher_query = """
-                    UNWIND $batch AS row
-                    MERGE (s:Entity {name: row.subject})
-                    MERGE (o:Entity {name: row.object})
-                    SET s.source_file = apoc.coll.toSet(coalesce(s.source_files, []) + row.source_file)
-                    SET o.source_file = apoc.coll.toSet(coalesce(o.source_files, []) + row.source_file)
-                    WITH s, o, row
-                    CALL apoc.create.relationship(s, row.relation, {}, o) YIELD rel
-                    RETURN count(rel)
-                    """
-                    session.run(cypher_query, batch=data_to_upload)
+                data_to_upload = [t.model_dump() for t in triple_list.triples]
+                
+                cypher_query = """
+                UNWIND $batch AS row
+                MERGE (s:Entity {name: row.subject})
+                MERGE (o:Entity {name: row.object})
+                SET s.source_file = apoc.coll.toSet(coalesce(s.source_files, []) + row.source_file)
+                SET o.source_file = apoc.coll.toSet(coalesce(o.source_files, []) + row.source_file)
+                WITH s, o, row
+                CALL apoc.create.relationship(s, row.relation, {}, o) YIELD rel
+                RETURN count(rel)
+                """
+                session.run(cypher_query, batch=data_to_upload)
 
-                    logger.info(f"成功上傳 {len(triple_list.triples)} 條關係。")
-                    return True
-            
-            except Exception as e:
-                logger.error(f"Fail to upload to Neo4j: {e}")
-                return False
+                logger.info(f"成功上傳 {len(triple_list.triples)} 條關係。")
+                return True
+        
+        except Exception as e:
+            logger.error(f"Fail to upload to Neo4j: {e}")
+            return False
             
     def query_retrival(self, cypher_query: str) -> Result:
         try:

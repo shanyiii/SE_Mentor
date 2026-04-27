@@ -4,7 +4,7 @@ from discord import app_commands
 from opencc import OpenCC
 from quiz_generater_llm import generate_quiz_llm
 from quiz_generater_kg import generate_quiz_kg
-from neo4j_controller import neo4j_retriever
+from neo4j_controller import neo4j_generate_notes, neo4j_retriever
 from config import DISCORD_TOKEN
 
 # client 是跟 discord 連接，intents 是要求機器人的權限
@@ -51,6 +51,11 @@ class QuizView(discord.ui.View):
 
         """
 
+    async def get_note(self):
+        misconception = '、'.join(self.learning_pp)
+        res = await neo4j_generate_notes(misconception)
+        return res["llm"]["replies"][0]._content[0].text
+
     async def check_answer(self, interaction, choice):
         question = self.questions[self.index]
 
@@ -60,7 +65,7 @@ class QuizView(discord.ui.View):
             # await interaction.response.send_message(f"正確q(≧▽≦q)答案就是 {question['options'][self.index]}", ephemeral=True)
         else:
             analysis = self.questions[self.index]["analysis"]
-            self.answer_history = self.answer_history + f"- 第{self.index+1}題：答錯\n，{analysis}"
+            self.answer_history = self.answer_history + f"- 第{self.index+1}題：答錯，{analysis}\n"
             self.learning_pp.append(self.questions[self.index]["concept"])
             # await interaction.response.send_message("錯誤o(≧口≦)o", ephemeral=True)
         
@@ -68,9 +73,15 @@ class QuizView(discord.ui.View):
 
         if self.index >= len(self.questions):
             await interaction.response.send_message(
-                f"\n測驗結束q(≧▽≦q) 你的分數：{self.score}/{len(self.questions)}\n答題記錄：\n{self.answer_history}"
+                f"\n測驗結束q(≧▽≦q) 你的分數：{self.score}/{len(self.questions)}\n答題記錄：\n{self.answer_history}\n"
             )
             print(f"學生學習弱項：{self.learning_pp}")
+
+            # await interaction.response.defer(ephemeral=True)
+            if len(self.learning_pp) > 0:
+                msg = await interaction.followup.send("正在生成筆記…")
+                note = await self.get_note()
+                await msg.edit(content=note)
         else:
             await interaction.response.edit_message(
                 content=self.get_question()
@@ -92,6 +103,14 @@ class QuizView(discord.ui.View):
     async def option_d(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.check_answer(interaction, 3)
 
+def printout_questions(question_list):
+    for question in question_list:
+        print(f"Question: {question['question']}")
+        print(f"Options: {question['options']}")
+        print(f"Answer: {question['answer']}")
+        print(f"Analysis: {question['analysis']}")
+        print(f"Concept: {question['concept']}")
+        print("\n")
 
 # ----- Slash Command -----
 @bot.tree.command(name="quiz_llm", description="開始測驗")
@@ -100,7 +119,7 @@ async def quiz_llm(interaction: discord.Interaction):
 
     try:
         question_list = await generate_quiz_llm()
-        print(question_list)
+        printout_questions(question_list)
         view = QuizView(question_list)
         await interaction.followup.send(view.get_question(), view=view)
     
@@ -114,7 +133,7 @@ async def quiz_kg(interaction: discord.Interaction):
 
     try:
         question_list = await generate_quiz_kg()
-        print(question_list)
+        printout_questions(question_list)
         view = QuizView(question_list)
         await interaction.followup.send(view.get_question(), view=view)
     
@@ -131,15 +150,15 @@ async def on_ready():
     print(f"目前登入身份：{bot.user}")
     print(f"在測試伺服器載入 {len(slash)} 個斜線指令")
 
-# @client.event
+@bot.event
 # # 當頻道有新訊息
-# async def on_message(message):
-#     # 排除機器人本身的訊息，避免無限循環
-#     if message.author == client.user:
-#         return
+async def on_message(message):
+    # 排除機器人本身的訊息，避免無限循環
+    if message.author == bot.user:
+        return
     
-#     print("Message received: ", message.content)
-#     response_text = await neo4j_retriever(message.content)
-#     await message.channel.send(response_text)
+    print("Message received: ", message.content)
+    response_text = await neo4j_retriever(message.content)
+    await message.channel.send(response_text)
 
 bot.run(DISCORD_TOKEN)
