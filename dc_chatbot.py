@@ -4,7 +4,7 @@ from discord import app_commands
 from opencc import OpenCC
 from quiz_generater_llm import generate_quiz_llm
 from quiz_generater_kg import generate_quiz_kg
-from neo4j_controller import neo4j_generate_notes, neo4j_retriever
+from haystack_controller import neo4j_generate_notes, neo4j_retriever, neo4j_doc_retriever
 from config import DISCORD_TOKEN
 
 # client 是跟 discord 連接，intents 是要求機器人的權限
@@ -141,24 +141,42 @@ async def quiz_kg(interaction: discord.Interaction):
         # 萬一生成失敗，發送錯誤訊息給使用者
         await interaction.followup.send(f"題目生成失敗：{e}")
 
+@bot.tree.command(name="document_question", description="專案問答")
+@app_commands.describe(question="請輸入你的問題")
+async def document_question(interaction: discord.Interaction, question: str):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        response = await neo4j_doc_retriever(question, "第七組")
+        content = f"> {question}\n\n{response}"
+        await interaction.followup.send(content=content)
+    
+    except Exception as e:
+        # 萬一生成失敗，發送錯誤訊息給使用者
+        await interaction.followup.send(f"回答生成失敗：{e}")
+
+@bot.tree.command(name="test_q")
+async def test_q(interaction: discord.Interaction, question: str):
+    await interaction.response.send_message(f"收到：{question}")
+
 # 調用event函式庫
 @bot.event
 async def on_ready():
     GUILD_ID = discord.Object(id=1460587197227860177)
+    # bot.tree.clear_commands(guild=GUILD_ID)
     bot.tree.copy_global_to(guild=GUILD_ID)
     slash = await bot.tree.sync()
     print(f"目前登入身份：{bot.user}")
     print(f"在測試伺服器載入 {len(slash)} 個斜線指令")
 
-@bot.event
-# # 當頻道有新訊息
-async def on_message(message):
-    # 排除機器人本身的訊息，避免無限循環
-    if message.author == bot.user:
-        return
+# @bot.event
+# # # 當頻道有新訊息
+# async def on_message(message):
+#     # 排除機器人本身的訊息，避免無限循環
+#     if message.author == bot.user:
+#         return
     
-    print("Message received: ", message.content)
-    response_text = await neo4j_retriever(message.content)
-    await message.channel.send(response_text)
+#     print("Message received: ", message.content)
+#     response_text = await neo4j_retriever(message.content)
+#     await message.channel.send(response_text)
 
 bot.run(DISCORD_TOKEN)
