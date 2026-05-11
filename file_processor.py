@@ -93,10 +93,7 @@ def get_tags_from_gpt(course_name, level, doc_content):
     return answer
 
 if __name__ == '__main__':
-    # "[03]使用者故事分析", "[04]敏捷開發方法", "[05]基礎專案管理與看板", 
-    # file_names = ["[07]軟體設計-系統設計", "[08]軟體設計-模組設計", "[09]軟體測試", "[10]進階軟體測試", "[11]DevOps自動化建置管理"]
-    # chapters = [7, 8, 9, 10, 11]
-    file_names = ["[07]軟體設計-系統設計"]
-    chapters = [7]
+    file_names = ["[08]軟體設計-模組設計", "[09]軟體測試", "[10]進階軟體測試", "[11]DevOps自動化建置管理"]
+    chapters = [8, 9, 10, 11]
     for file_name, ch in zip(file_names, chapters):
         pdf2md(f"C:\\Users\\shanyiii\\Desktop\\mine\\1141軟體工程\\slides\\{file_name}.pdf", f"ch{ch}")
