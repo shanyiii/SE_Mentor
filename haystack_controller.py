@@ -104,7 +104,7 @@ async def neo4j_retriever(question: str) -> str:
 
     pipeline = Pipeline()
     pipeline.add_component("text_embedder", SentenceTransformersTextEmbedder(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"))
-    pipeline.add_component("retriever", Neo4jEmbeddingRetriever(document_store=document_store))
+    pipeline.add_component("retriever", Neo4jEmbeddingRetriever(document_store=document_store, top_k=3))
     pipeline.add_component("prompt_builder", prompt_builder)
     pipeline.add_component("llm", gpt_chat)
 
@@ -120,8 +120,8 @@ async def neo4j_retriever(question: str) -> str:
         include_outputs_from=["retriever", "llm"]
     )
 
-    # return result
-    return result["llm"]["replies"][0]._content[0].text
+    return result
+    # return result["llm"]["replies"][0]._content[0].text
 
 async def neo4j_generate_notes(concept: str) -> str:
     template = [
@@ -267,7 +267,7 @@ async def main():
 
 async def upload_2_vectordb(chapter, textbook_name):
     try:
-        with open(f"md_files\\ch{chapter}_markdown.md", 'r', encoding='utf-8') as input_file:
+        with open(f"md_files\\textbooks\\ch{chapter}_markdown.md", 'r', encoding='utf-8') as input_file:
             md_content = input_file.read()
     except FileNotFoundError:
         print("Error: The specified file was not found.")
@@ -280,16 +280,14 @@ async def upload_2_vectordb(chapter, textbook_name):
     upload_to_neo4j(documents)
 
 if __name__ == '__main__':
-    # file_names = ["[03]使用者故事分析", "[04]敏捷開發方法", "[05]基礎專案管理與看板", "[07]軟體設計-系統設計", "[08]軟體設計-模組設計", "[09]軟體測試", "[10]進階軟體測試", "[11]DevOps自動化建置管理"]
-    # chapters = [3, 4, 5, 7, 8, 9, 10, 11]
-    # file_names = ["[07]軟體設計-系統設計"]
-    # chapters = [7]
-    # for file_name, ch in zip(file_names, chapters):
-    #     (upload_2_vectordb(ch, file_name))
+    file_names = ["[08]軟體設計-模組設計", "[09]軟體測試", "[10]進階軟體測試", "[11]DevOps自動化建置管理"]
+    chapters = [8, 9, 10, 11]
+    for file_name, ch in zip(file_names, chapters):
+        asyncio.run(upload_2_vectordb(ch, file_name))
 
-    question = "請問有哪些跟購物車相關的功能需求？"
-    res = asyncio.run(neo4j_doc_retriever(question, "第七組"))
-    print(res)
+    # question = "請問有哪些跟購物車相關的功能需求？"
+    # res = asyncio.run(neo4j_doc_retriever(question, "第七組"))
+    # print(res)
 
     # upload_to_vector_db(["C:\\Users\\shanyiii\\Desktop\\mine\\1141軟體工程\\[06]版本控制.pdf"])
 

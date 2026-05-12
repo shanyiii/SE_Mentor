@@ -212,3 +212,4 @@ qdrant_storage/
 neo4j_storage/
 md_files/
 tabotaienv/
+rag_eval/

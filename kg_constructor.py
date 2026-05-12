@@ -1,11 +1,12 @@
-import re, ast, time, random, json
+import re, ast, time, random, json, gc
 from openai import OpenAI
 import anthropic
 
 from file_processor import clean_markdown, md_splitter
 from neo4j_impoter import Neo4jImoprter, TripleList
-from common import NEO4J_URI, ENTITY_PROMPT_4_SRD, TRIPLE_PROMPT_4_SRD
+from common import NEO4J_URI
 from config import NEO4J_PASSWORD, GEMINI_API_KEY, CLAUDE_API_KEY
+from prompts import ENTITY_PROMPT_4_TEXTBOOK, TRIPLE_PROMPT_4_TEXTBOOK
 from google import genai
 from google.genai import types
 from google.genai.errors import ClientError
@@ -117,7 +118,7 @@ def relations_extraction(prompt, entities_list, user_input):
 
 if __name__ == '__main__':
     # try:
-    #     with open("md_files\\document\\海大餐飲外送系統-需求文件(SRD)-shorter.md", 'r', encoding='utf-8') as input_file:
+    #     with open("md_files\\textbooks\\ch4_markdown.md", 'r', encoding='utf-8') as input_file:
     #         md_content = input_file.read()
     # except FileNotFoundError:
     #     print("Error: The specified file was not found.")
@@ -129,7 +130,7 @@ if __name__ == '__main__':
     # page_entities_list = list()
     # for doc in md_documents:
     #     try:
-    #         page_entities = entities_extraction(doc.page_content, ENTITY_PROMPT_4_SRD)
+    #         page_entities = entities_extraction(doc.page_content, ENTITY_PROMPT_4_TEXTBOOK)
     #         if page_entities:
     #             page_entities_list.append(page_entities)
     #         # time.sleep(random.uniform(0.5, 1.5))
@@ -139,35 +140,41 @@ if __name__ == '__main__':
     
     # entities_list = list(set(entity.lower() for page_entities in page_entities_list for entity in page_entities))
     # print("實體抽取完成")
-    # with open("md_files\\JSON\\doc_entities_claude.json", 'w', encoding="utf-8") as f:
+    # with open("md_files\\JSON\\textbook_entities_ch4.json", 'w', encoding="utf-8") as f:
     #     json.dump(entities_list, f, indent=2, ensure_ascii=False)
     # # print(entities_list)
 
-    # triple_list = list()
+    # list_of_TripleList = list()
     # for doc in md_documents:
     #     try:
-    #         triples = relations_extraction(TRIPLE_PROMPT_4_SRD, entities_list, doc)
+    #         triples = relations_extraction(TRIPLE_PROMPT_4_TEXTBOOK, entities_list, doc)
     #         if triples:
-    #             triple_list.append(triples)
+    #             list_of_TripleList.append(triples)
     #     except Exception as e:
     #         print(f"Exception received: {e}")
-    # data_to_save = [t.model_dump(mode="json") for triples in triple_list for t in triples.triples]
-    # with open("md_files\\JSON\\doc_triples_claude.json", 'w', encoding="utf-8") as f:
+    # data_to_save = [t.model_dump(mode="json") for triples in list_of_TripleList for t in triples.triples]
+    # with open("md_files\\JSON\\textbook_triples_ch4.json", 'w', encoding="utf-8") as f:
     #     json.dump(data_to_save, f, indent=2, ensure_ascii=False)
     # print("關係抽取完成")
+    # triple_list = TripleList(triples=data_to_save)
+    # del list_of_TripleList
+    # gc.collect()
 
     # ======直接開啟抽取好的KG======
 
-    with open("md_files\\JSON\\doc_triples_claude.json", 'r', encoding='utf-8') as f:
+    with open("md_files\\JSON\\textbook_triples_ch4.json", 'r', encoding='utf-8') as f:
         triple_dict = json.load(f)
     triple_list = TripleList(triples=triple_dict)
     
-    source_file = "海大餐飲外送系統-SRD-claude"
+    # ======上傳KG======
+
+    source_file = "[04]敏捷開發方法.pdf"
     
     importer = Neo4jImoprter(uri=NEO4J_URI, username="neo4j", password=NEO4J_PASSWORD)
     try:
         if importer.connect():
-            is_success = importer.upload_doc_triples(triple_list, source_file, "第七組")
+            # is_success = importer.upload_doc_triples(triple_list, source_file, "第七組")
+            is_success = importer.upload_textbook_triples(triple_list, source_file)
             print(f"上傳結果：{is_success}")
     finally:
         importer.close()

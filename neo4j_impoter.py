@@ -15,13 +15,16 @@ class EntityLabel(str, Enum):
     API = "API"
     TestCase = "TestCase"
     General = "General"
+    Concept = "Concept"
+    Technology = "Technology"
+    Methodology = "Methodology"
 
 class KeyValPair(BaseModel):
     key: str = Field(..., description="屬性名稱 (例如: req_id, language)")
     value: str= Field(..., description="屬性值 (例如: REQ-001, Python)")
 
 class Entity(BaseModel):
-    name: str = Field(..., description="實體的唯一名稱，以需求、模組，或測試案例內容為名稱 (例如: 購物車模組, /api/login)") # name 為必填
+    name: str = Field(..., description="實體的唯一名稱") # name 為必填
     label: EntityLabel
     properties: Optional[List[KeyValPair]] = Field(default_factory=list, description="實體的屬性資訊")
 
@@ -59,24 +62,53 @@ class Neo4jImoprter:
             self.driver.close()
             logger.info("Neo4j connection closed")
 
-    def upload_textbook_triples(self, triple_list: TripleList) -> bool:
+    def upload_textbook_triples(self, triple_list: TripleList, source_file: str) -> bool:
         try:
             with self.driver.session() as session:
-                session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE")
+                labels = ["Concept", "Technology", "Methodology"]
+                for label in labels:
+                    session.run(f"""
+                    CREATE CONSTRAINT {label.lower()}_group_name_unique IF NOT EXISTS 
+                    FOR (n:{label}) 
+                    REQUIRE (n.name, n.group) IS UNIQUE
+                    """)
+                # session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE")
 
-                data_to_upload = [t.model_dump() for t in triple_list.triples]
+                # data_to_upload = [t.model_dump() for t in triple_list.triples]
+                data_to_upload = list()
+                for t in triple_list.triples:
+                    item = t.model_dump()
+                    # 強制轉換 Enum 為字串
+                    item["subject"]["label"] = str(t.subject.label.value)
+                    item["object"]["label"] = str(t.object.label.value)
+
+                    s_kv = item["subject"].get("properties") or []
+                    item["subject"]["props_dict"] = {kv["key"]: kv["value"] for kv in s_kv} if s_kv else {}
+                    
+                    o_kv = item["object"].get("properties") or []
+                    item["object"]["props_dict"] = {kv["key"]: kv["value"] for kv in o_kv} if o_kv else {}
+
+                    data_to_upload.append(item)
                 
+                # print(data_to_upload[0])
                 cypher_query = """
                 UNWIND $batch AS row
-                MERGE (s:Entity {name: row.subject})
-                MERGE (o:Entity {name: row.object})
-                SET s.source_file = apoc.coll.toSet(coalesce(s.source_files, []) + row.source_file)
-                SET o.source_file = apoc.coll.toSet(coalesce(o.source_files, []) + row.source_file)
-                WITH s, o, row
-                CALL apoc.create.relationship(s, row.relation, {}, o) YIELD rel
+                CALL apoc.merge.node([row.subject.label], {name: row.subject.name}, {}, {}) YIELD node AS sNode
+                WITH sNode, row
+                SET sNode += row.subject.props_dict
+                SET sNode.source_files = apoc.coll.toSet(coalesce(sNode.source_files, []) + $source_file)
+
+                WITH sNode, row
+                CALL apoc.merge.node([row.object.label], {name: row.object.name}, {}, {}) YIELD node AS oNode
+                WITH sNode, oNode, row
+                SET oNode += row.object.props_dict
+                SET oNode.source_files = apoc.coll.toSet(coalesce(oNode.source_files, []) + $source_file)
+
+                WITH sNode, oNode, row
+                CALL apoc.create.relationship(sNode, row.relation, {source_file: $source_file}, oNode) YIELD rel
                 RETURN count(rel)
                 """
-                session.run(cypher_query, batch=data_to_upload)
+                session.run(cypher_query, batch=data_to_upload, source_file=source_file)
 
                 logger.info(f"成功上傳 {len(triple_list.triples)} 條關係。")
                 return True
