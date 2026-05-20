@@ -1,4 +1,7 @@
 import discord
+import asyncio
+from functools import partial
+
 from discord.ext import commands
 from discord import app_commands
 from opencc import OpenCC
@@ -6,13 +9,18 @@ from quiz_generater_llm import generate_quiz_llm
 from quiz_generater_kg import generate_quiz_kg
 from haystack_controller import neo4j_generate_notes, neo4j_retriever, neo4j_doc_retriever
 from config import DISCORD_TOKEN
+from prompts import DCCHATBOT_WELCOME_MESSAGE
 
 # client 是跟 discord 連接，intents 是要求機器人的權限
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 
 # client = discord.Client(intents = intents)
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+GUILD_ID = discord.Object(id=1460587197227860177)
+welcomed_users = list()
 
 # ----- 題目資料 -----
 # question_list = [
@@ -27,6 +35,11 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 #         "answer": 2
 #     }
 # ]
+
+async def run_blocking(func, *args, **kwargs):
+    # 把同步阻塞函式包成 async，避免卡住 event loop
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, partial(func, *args, **kwargs))
 
 # ----- Button UI -----
 class QuizView(discord.ui.View):
@@ -51,10 +64,17 @@ class QuizView(discord.ui.View):
 
         """
 
+    def split_message(self, text, limit=1900):
+        return [
+            text[i:i+limit]
+            for i in range(0, len(text), limit)
+        ]
+
     async def get_note(self):
         misconception = '、'.join(self.learning_pp)
-        res = await neo4j_generate_notes(misconception)
-        return res["llm"]["replies"][0]._content[0].text
+        res = await run_blocking(neo4j_generate_notes, misconception)
+        # res = await neo4j_generate_notes(misconception)
+        return res["llm"]["replies"][0]
 
     async def check_answer(self, interaction, choice):
         question = self.questions[self.index]
@@ -72,7 +92,9 @@ class QuizView(discord.ui.View):
         self.index += 1
 
         if self.index >= len(self.questions):
-            await interaction.response.send_message(
+            await interaction.response.defer()
+
+            await interaction.followup.send(
                 f"\n測驗結束q(≧▽≦q) 你的分數：{self.score}/{len(self.questions)}\n答題記錄：\n{self.answer_history}\n"
             )
             print(f"學生學習弱項：{self.learning_pp}")
@@ -80,8 +102,16 @@ class QuizView(discord.ui.View):
             # await interaction.response.defer(ephemeral=True)
             if len(self.learning_pp) > 0:
                 msg = await interaction.followup.send("正在生成筆記…")
-                note = await self.get_note()
-                await msg.edit(content=note)
+                genetared_note = await self.get_note()
+                pp = '、'.join(self.learning_pp)
+                note = f"你可能對這些概念比較弱：{pp}\n以下是你的專屬筆記！\n\n{genetared_note}"
+                # await msg.edit(content=note)
+                chunks = self.split_message(note)
+
+                await msg.edit(content=chunks[0])
+
+                for chunk in chunks[1:]:
+                    await interaction.followup.send(chunk)
         else:
             await interaction.response.edit_message(
                 content=self.get_question()
@@ -127,7 +157,7 @@ async def quiz_llm(interaction: discord.Interaction):
         # 萬一生成失敗，發送錯誤訊息給使用者
         await interaction.followup.send(f"題目生成失敗：{e}")
 
-@bot.tree.command(name="quiz_kg", description="開始測驗")
+@bot.tree.command(name="quiz_kg", description="開始測驗", guild=GUILD_ID)
 async def quiz_kg(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
@@ -141,7 +171,7 @@ async def quiz_kg(interaction: discord.Interaction):
         # 萬一生成失敗，發送錯誤訊息給使用者
         await interaction.followup.send(f"題目生成失敗：{e}")
 
-@bot.tree.command(name="document_question", description="專案問答")
+@bot.tree.command(name="document_question", description="專案問答", guild=GUILD_ID)
 @app_commands.describe(question="請輸入你的問題")
 async def document_question(interaction: discord.Interaction, question: str):
     await interaction.response.defer(ephemeral=True)
@@ -154,19 +184,61 @@ async def document_question(interaction: discord.Interaction, question: str):
         # 萬一生成失敗，發送錯誤訊息給使用者
         await interaction.followup.send(f"回答生成失敗：{e}")
 
-@bot.tree.command(name="test_q")
-async def test_q(interaction: discord.Interaction, question: str):
-    await interaction.response.send_message(f"收到：{question}")
+@bot.tree.command(name="course_qa", description="課程問答")
+@app_commands.describe(question="請輸入你的問題")
+async def course_qa(interaction: discord.Interaction, chapter: str, question: str):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        response = await neo4j_retriever(question, chapter)
+        content = f"> {question}\n\n{response['llm']['replies'][0]}"
+        await interaction.followup.send(content=content)
+    
+    except Exception as e:
+        # 萬一生成失敗，發送錯誤訊息給使用者
+        await interaction.followup.send(f"回答生成失敗：{e}")
 
 # 調用event函式庫
 @bot.event
 async def on_ready():
-    GUILD_ID = discord.Object(id=1460587197227860177)
-    # bot.tree.clear_commands(guild=GUILD_ID)
-    bot.tree.copy_global_to(guild=GUILD_ID)
+    bot.tree.clear_commands(guild=GUILD_ID)
+    # bot.tree.copy_global_to(guild=GUILD_ID)
     slash = await bot.tree.sync()
     print(f"目前登入身份：{bot.user}")
     print(f"在測試伺服器載入 {len(slash)} 個斜線指令")
+
+@bot.event
+async def on_member_join(member):
+    print(f"{member.name} has joined the server!")
+
+    try:
+        await member.send(DCCHATBOT_WELCOME_MESSAGE)
+        welcomed_users.append(member.id)
+
+    except discord.Forbidden:
+        print(f"無法私訊 {member.name}")
+
+    print(welcomed_users)
+    
+@bot.event
+async def on_message(message):
+
+    if message.author.bot:
+        return
+
+    if not isinstance(message.channel, discord.DMChannel):
+        return
+
+    user_id = message.author.id
+
+    if user_id not in welcomed_users:
+        welcomed_users.append(user_id)
+        await message.channel.send(DCCHATBOT_WELCOME_MESSAGE)
+    else:
+        await message.channel.send("你好！若要使用 TABotAI 的其他功能，請使用斜線指令")
+
+    await bot.process_commands(message)
+
+    print(welcomed_users)
 
 # @bot.event
 # # # 當頻道有新訊息

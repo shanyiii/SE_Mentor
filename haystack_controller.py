@@ -1,6 +1,7 @@
-import os, asyncio
-from typing import List
+import os, asyncio, json, re
+from typing import List, Dict, Any
 
+import anthropic
 from opencc import OpenCC
 from haystack import Document, Pipeline, component
 from haystack.utils import Secret
@@ -9,6 +10,7 @@ from haystack.components.builders import ChatPromptBuilder, PromptBuilder
 from haystack.components.converters import PyPDFToDocument
 from haystack.components.preprocessors import DocumentCleaner, DocumentSplitter
 from haystack.components.writers import DocumentWriter
+from haystack.components.rankers import TransformersSimilarityRanker
 from haystack.components.generators.chat import OpenAIChatGenerator
 from haystack.components.generators import OpenAIGenerator
 from haystack_integrations.components.generators.anthropic import AnthropicGenerator
@@ -17,7 +19,7 @@ from neo4j_haystack import Neo4jEmbeddingRetriever, Neo4jDocumentStore
 from neo4j import GraphDatabase
 
 from file_processor import md_splitter, clean_markdown
-from config import OPENAI_API_KEY, NEO4J_PASSWORD, CLAUDE_API_KEY
+from config import OPENAI_API_KEY, NEO4J_PASSWORD, CLAUDE_API_KEY, GEMINI_API_KEY
 
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
@@ -41,15 +43,17 @@ def upload_to_neo4j(documents: list[Document]):
     print(document_store.count_documents())
 
 # 替 chunk 加上 metadata 並轉為 Document 物件
-def add_metadata(md_documents: list[Document], source_file: str) -> list[Document]:
+def add_metadata(md_documents: list[Document], source_file: str, content_tags: list[str]) -> list[Document]:
     documents = list()
-    for doc in md_documents:
+    for doc, content_tag in zip(md_documents, content_tags):
+        cleaned_md = clean_markdown(doc.page_content)
         documents.append(
             Document(
-                content=clean_markdown(doc.page_content),
+                content=f"{content_tag}\n\n{cleaned_md}",
                 meta={
                     "content_type": "textbook",
-                    "source_file": source_file
+                    "source_file": source_file,
+                    "tags": content_tag
                 }
             )
         )
@@ -82,11 +86,55 @@ def upload_to_vector_db(file_path: list):
 
     pipeline.run({"converter": {"sources": file_path}})
 
-async def neo4j_retriever(question: str) -> str:
-    template = [
+@component
+class SourceIdentifier:
+    def __init__(self, api_key: str):
+        self.client = anthropic.Anthropic(api_key=api_key)
+
+    @component.output_types(filters=Dict[str, Any])
+    def run(self, user_input: str):
+        source_identify_prompt = f"""
+        你是一個「軟體工程問題分類器」，請根據使用者的問題內容，判斷該問題可以從哪個軟體工程課程章節得到答案，並僅輸出章節名稱(包含編號)。
+
+        【章節清單】
+        - [01]軟體危機與軟體流程
+        - [02]基礎需求工程
+        - [03]使用者故事分析
+        - [04]敏捷開發方法
+        - [05]基礎專案管理與看板
+        - [06]版本控制
+        - [07]軟體設計-系統設計
+        - [08]軟體設計-模組設計
+        - [09]軟體測試
+        - [10]進階軟體測試
+        - [11]DevOps自動化建置管理
+
+        【使用者問題】
+        {user_input}
+        """
+        res = self.client.beta.messages.create(
+            max_tokens=1024,
+            messages=[
+                {"role":"user", "content":source_identify_prompt}
+            ],
+            model="claude-opus-4-6",
+        )
+        print(f"來源資料標題：{res.content[0].text}")
+        return {
+            "filters": {
+                "field": "source_file",
+                "operator": "==",
+                "value": f"{res.content[0].text}.pdf"
+            }
+        }
+
+async def neo4j_retriever(question: str, chapter: str) -> str:
+    file_names = ["[01]軟體危機與軟體流程", "[02]基礎需求工程", "[03]使用者故事分析", "[04]敏捷開發方法", "[05]基礎專案管理與看板", "[06]版本控制", "[07]軟體設計-系統設計", "[08]軟體設計-模組設計", "[09]軟體測試", "[10]進階軟體測試", "[11]DevOps自動化建置管理"]
+    chapter_name = file_names[int(chapter)-1]
+    response_template = [
         ChatMessage.from_user(
             """
-            你是一個「軟體工程課程助教」請根據提供的資訊用台灣繁體中文回答問題，並僅輸出你的回答。如果問題與「軟體工程」無關，或是答案無法從資訊得知的話，請不要擅自生成答案。
+            你是一個「軟體工程課程助教」請根據提供的資訊用台灣繁體中文回答問題，並僅輸出你的回答。請勿直接摘要資訊內容，而是針對問題僅採用必要資訊來回答，並控制在5到7句話，總字數不超過500字。如果問題與「軟體工程」無關，或是答案無法從資訊得知的話，請不要擅自生成答案。
 
             Context:
             {% for document in documents %}
@@ -99,23 +147,39 @@ async def neo4j_retriever(question: str) -> str:
         )
     ]
 
-    prompt_builder = ChatPromptBuilder(template=template, required_variables=["question"])
     gpt_chat = OpenAIChatGenerator(api_key=Secret.from_env_var("OPENAI_API_KEY"), model="gpt-4o-mini")
+    # claude = AnthropicGenerator(api_key=Secret.from_token(CLAUDE_API_KEY), model="claude-opus-4-6", generation_kwargs={"max_tokens": 2048})
+    ranker = TransformersSimilarityRanker(top_k=3)
 
     pipeline = Pipeline()
     pipeline.add_component("text_embedder", SentenceTransformersTextEmbedder(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"))
-    pipeline.add_component("retriever", Neo4jEmbeddingRetriever(document_store=document_store, top_k=3))
-    pipeline.add_component("prompt_builder", prompt_builder)
+    pipeline.add_component("retriever", Neo4jEmbeddingRetriever(document_store=document_store, top_k=5))
+    pipeline.add_component("ranker", ranker)
+    pipeline.add_component("response_prompt", ChatPromptBuilder(template=response_template, required_variables=["question"]))
+    # pipeline.add_component("source_identifier", SourceIdentifier(CLAUDE_API_KEY))
     pipeline.add_component("llm", gpt_chat)
+    # pipeline.add_component("llm", claude)
 
+    # pipeline.connect("source_identifier.filters", "retriever.filters")
     pipeline.connect("text_embedder.embedding", "retriever.query_embedding")
-    pipeline.connect("retriever.documents", "prompt_builder.documents")
-    pipeline.connect("prompt_builder.prompt", "llm.messages")
+    pipeline.connect("retriever.documents", "ranker.documents")
+    pipeline.connect("ranker.documents", "response_prompt.documents")
+    # pipeline.connect("response_prompt.prompt", "llm.messages")
+    pipeline.connect("response_prompt.prompt", "llm")
 
     result = pipeline.run(
         data={
+            # "source_identifier": {"user_input": question},
             "text_embedder": {"text": question}, 
-            "prompt_builder": {"question": question}
+            "response_prompt": {"question": question},
+            "ranker": {"query": question},
+            "retriever": {
+                "filters": {
+                    "field": "source_file",
+                    "operator": "==",
+                    "value": f"{chapter_name}.pdf"
+                }
+            }
         },
         include_outputs_from=["retriever", "llm"]
     )
@@ -123,11 +187,11 @@ async def neo4j_retriever(question: str) -> str:
     return result
     # return result["llm"]["replies"][0]._content[0].text
 
-async def neo4j_generate_notes(concept: str) -> str:
+def neo4j_generate_notes(concept: str) -> str:
     template = [
         ChatMessage.from_user(
             """
-            請根據提供的「軟體工程」教材內容，針對指定的概念，生成一份筆記供學生學習。
+            請根據提供的「軟體工程」教材內容，針對指定的概念，生成一份筆記供學生學習，字數限制在1500字以內。
             筆記內容須包含：
             - 關鍵概念解說
             - 相關範例
@@ -147,17 +211,18 @@ async def neo4j_generate_notes(concept: str) -> str:
     ]
 
     prompt_builder = ChatPromptBuilder(template=template, required_variables=["concept"])
-    gpt_chat = OpenAIChatGenerator(api_key=Secret.from_env_var("OPENAI_API_KEY"), model="gpt-4o-mini")
+    # gpt_chat = OpenAIChatGenerator(api_key=Secret.from_env_var("OPENAI_API_KEY"), model="gpt-4o-mini")
+    claude = AnthropicGenerator(api_key=Secret.from_token(CLAUDE_API_KEY), model="claude-opus-4-6", generation_kwargs={"max_tokens": 2048})
 
     pipeline = Pipeline()
     pipeline.add_component("text_embedder", SentenceTransformersTextEmbedder(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"))
     pipeline.add_component("retriever", Neo4jEmbeddingRetriever(document_store=document_store))
     pipeline.add_component("prompt_builder", prompt_builder)
-    pipeline.add_component("llm", gpt_chat)
+    pipeline.add_component("llm", claude)
 
     pipeline.connect("text_embedder.embedding", "retriever.query_embedding")
     pipeline.connect("retriever.documents", "prompt_builder.documents")
-    pipeline.connect("prompt_builder.prompt", "llm.messages")
+    pipeline.connect("prompt_builder.prompt", "llm")
 
     result = pipeline.run(
         data={
@@ -193,14 +258,75 @@ class Neo4jExecutor:
             except Exception as e:
                 return {"query_result": f"Cypher 執行錯誤: {str(e)}"}
 
+async def neo4j_textbook_kg_retriever(question: str) -> str:
+    # 將問題轉為 Cypher 的 Prompt
+    cypher_prompt_template = """
+    你是一位 Neo4j 專家。請根據以下 Schema 將使用者的問題轉化為精確的 Cypher 查詢語句，並以 string 形式輸出。
+
+    【Schema 資訊】
+    - Labels: Requirement, SystemComponent, API, TestCase, Actor, General, Concept, Technology, Methodology
+    - Properties: name, group, source_files, description, (以及其他從文件提取的屬性)
+    - Relationships: 是, 部分, 實作, 使用, 操作, 依賴, 改善, 解決
+
+    【限制條件】
+    - 只輸出 Cypher 語句，不要任何解釋或 markdown 標籤。
+    - 盡量使用關鍵字模糊匹配 (CONTAINS) 以提高檢索成功率。
+
+    使用者的問題: {{question}}
+    生成的 Cypher:
+    """
+
+    answer_prompt_template = """
+    你是一位專業的軟體工程教學助教。請根據以下從知識圖譜檢索出來的「結構化資料」，回答學生的問題。
+
+    【檢索資料】
+    {{graph_results}}
+
+    【學生問題】
+    {{question}}
+
+    如果有語義相同的資料，請合併為一個。例如：「會員清單瀏覽」跟「瀏覽會員清單」請合併為「瀏覽會員清單」。
+    如果資料不足，請直接輸出「資料不足無法回答」。
+    如果沒有資料，或是查詢語法有誤，請直接輸出「查無資料，請檢查查詢語法」。
+    答案：
+    """
+
+    cypher_llm = AnthropicGenerator(api_key=Secret.from_token(CLAUDE_API_KEY), model="claude-opus-4-6")
+    answer_llm = OpenAIGenerator(api_key=Secret.from_env_var("OPENAI_API_KEY"), model="gpt-4o-mini")
+    neo4j_executor = Neo4jExecutor("bolt://localhost:7687", "neo4j", NEO4J_PASSWORD)
+
+    pipeline = Pipeline()
+    pipeline.add_component("cypher_prompt", PromptBuilder(template=cypher_prompt_template))
+    pipeline.add_component("cypher_llm", cypher_llm)
+    pipeline.add_component("neo4j_executor", neo4j_executor)
+    pipeline.add_component("answer_prompt", PromptBuilder(template=answer_prompt_template))
+    pipeline.add_component("answer_llm", answer_llm)
+
+    pipeline.connect("cypher_prompt", "cypher_llm")
+    pipeline.connect("cypher_llm.replies", "neo4j_executor.cypher_list")
+    pipeline.connect("neo4j_executor.query_result", "answer_prompt.graph_results")
+    pipeline.connect("answer_prompt", "answer_llm")
+
+    result = pipeline.run(
+        data={
+            "cypher_prompt": {"question": question},
+            "answer_prompt": {"question": question},
+            "neo4j_executor": {}
+        },
+        include_outputs_from=["cypher_llm", "neo4j_executor", "answer_llm"]
+    )
+    print(f"【cypher from llm】:\n{result['cypher_llm']['replies']}")
+    # return result
+    return result["answer_llm"]["replies"][0]
+
 async def neo4j_doc_retriever(question: str, group_id: str) -> str:
     # 將問題轉為 Cypher 的 Prompt
     cypher_prompt_template = """
     你是一位 Neo4j 專家。請根據以下 Schema 將使用者的問題轉化為精確的 Cypher 查詢語句，並以 string 形式輸出。
 
     【Schema 資訊】
-    - Labels: Requirement, Actor
-    - Properties: name, group, source_files, (以及其他從文件提取的屬性)
+    - Labels: Requirement, SystemComponent, API, TestCase, Actor, General
+    - Properties: name, group, source_files, description, (以及其他從文件提取的屬性)
     - Relationships: 是, 部分, 實作, 使用, 操作, 依賴, 改善, 解決
 
     【限制條件】
@@ -265,6 +391,41 @@ async def main():
     print("="*30)
     print(res["llm"]["replies"][0]._content[0].text)
 
+async def batch_tags(md_documents):
+    chunks = [d.page_content for d in md_documents]
+    chunk_dict = {json.dumps([{"id": i, "content": c} for i, c in enumerate(chunks)])}
+
+    prompt = f"""
+    以下是 {len(md_documents)} 個軟體工程教材段落，請為每個段落生成 2-3 個關鍵字，並以 JSON 格式回傳，key 是段落編號，value 是關鍵字，以python list呈現。
+    
+    【輸出格式範例】
+    1:[版本控制, git 指令]
+
+    【段落】
+    {chunk_dict}
+    """
+
+    client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+    res = client.beta.messages.create(
+            max_tokens=4096,
+            messages=[
+                {"role":"user", "content":prompt}
+            ],
+            model="claude-opus-4-6",
+        )
+    
+    try:
+        output = re.sub(r'```', '', res.content[0].text)
+        output = re.sub(r'json', '', output)
+        result = json.loads(output)
+    except Exception as e:
+        print(e)
+        print("="*30)
+        print(chunk_dict)
+        print(output)
+    # print(result)
+    return result
+
 async def upload_2_vectordb(chapter, textbook_name):
     try:
         with open(f"md_files\\textbooks\\ch{chapter}_markdown.md", 'r', encoding='utf-8') as input_file:
@@ -274,20 +435,53 @@ async def upload_2_vectordb(chapter, textbook_name):
         return
 
     md_documents = md_splitter(md_content)
-    # documents = [Document(content=clean_markdown(doc.page_content)) for doc in md_documents]
-    documents = add_metadata(md_documents, f"{textbook_name}.pdf")
+    tags_w_id = await batch_tags(md_documents)
+    chapter_tags = {
+        "chapter": textbook_name,
+        "tags": tags_w_id
+    }
+    with open(f"md_files\\JSON\\tags\\ch{chapter}_content_tags.json", 'w', encoding="utf-8") as f:
+        json.dump(chapter_tags, f, indent=2, ensure_ascii=False)
+    # with open("md_files\\JSON\\tags\\ch6_content_tags.json", 'r', encoding='utf-8') as f:
+    #     tags_w_id = json.load(f)
+    # documents = [Document(content=clean_markdown(doc.page_content)) for doc in md_documents] # 在 add_metadata 做
+    content_tags = [tags_w_id[str(i)] for i in range(0, len(md_documents))]
+    # print(content_tags[:5])
+    documents = add_metadata(md_documents, f"{textbook_name}.pdf", content_tags)
 
     upload_to_neo4j(documents)
 
-if __name__ == '__main__':
-    file_names = ["[08]軟體設計-模組設計", "[09]軟體測試", "[10]進階軟體測試", "[11]DevOps自動化建置管理"]
-    chapters = [8, 9, 10, 11]
-    for file_name, ch in zip(file_names, chapters):
-        asyncio.run(upload_2_vectordb(ch, file_name))
+async def filter_retrieval_test():
+    embedder = SentenceTransformersTextEmbedder(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+    embedder.warm_up()
+    result = embedder.run("什麼是凝聚力跟偶合力？")
+    retriever = Neo4jEmbeddingRetriever(document_store=document_store, top_k=3)
+    docs = retriever.run(
+        query_embedding=result["embedding"],
+        filters={
+            "field": "source_file",
+            "operator": "==",
+            "value": "[07]軟體設計-系統設計.pdf"
+        }
+    )
+    for d in docs["documents"]:
+        print(d.content)
 
-    # question = "請問有哪些跟購物車相關的功能需求？"
-    # res = asyncio.run(neo4j_doc_retriever(question, "第七組"))
-    # print(res)
+if __name__ == '__main__':
+    # file_names = ["[01]軟體危機與軟體流程", "[02]基礎需求工程", "[03]使用者故事分析", "[04]敏捷開發方法", "[05]基礎專案管理與看板", "[06]版本控制", "[07]軟體設計-系統設計", "[08]軟體設計-模組設計", "[09]軟體測試", "[10]進階軟體測試", "[11]DevOps自動化建置管理"]
+    # chapters = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    # for file_name, ch in zip(file_names, chapters):
+    #     asyncio.run(upload_2_vectordb(ch, file_name))
+
+    # asyncio.run(filter_retrieval_test())
+
+    question = "請問白箱測試跟黑箱測試的差異是什麼"
+    res = asyncio.run(neo4j_retriever(question, "9"))
+    for d in  res["retriever"]["documents"]:
+        print(d.content)
+    print("="*30)
+    print(res["llm"]["replies"][0]._content[0].text)
+    # print(res["llm"]["replies"][0])
 
     # upload_to_vector_db(["C:\\Users\\shanyiii\\Desktop\\mine\\1141軟體工程\\[06]版本控制.pdf"])
 

@@ -112,8 +112,8 @@ def relations_extraction(prompt, entities_list, user_input):
     # )
     # print(res.output_parsed)
     # print(res.text)
-    # return res.output_parsed
-    return res.parsed_output
+    # return res.output_parsed  #gpt
+    return res.parsed_output    # claude
     # return res.parsed
 
 if __name__ == '__main__':

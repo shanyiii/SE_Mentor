@@ -40,7 +40,8 @@ def md_splitter(md_content):
     headers_to_split_on = [  
         ("#", "Header 1"),  
         ("##", "Header 2"),  
-        ("###", "Header 3"), 
+        ("###", "Header 3"),  
+        ("####", "Header 4"),
     ]
 
     # Create a MarkdownHeaderTextSplitter object to split text based on markdown headers
