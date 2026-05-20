@@ -1,6 +1,7 @@
 import discord
 import asyncio
 from functools import partial
+from concurrent.futures import ThreadPoolExecutor
 
 from discord.ext import commands
 from discord import app_commands
@@ -36,20 +37,26 @@ welcomed_users = list()
 #     }
 # ]
 
+# 把同步阻塞函式包成 async，避免卡住 event loop
 async def run_blocking(func, *args, **kwargs):
-    # 把同步阻塞函式包成 async，避免卡住 event loop
+    executor = ThreadPoolExecutor(max_workers=15)
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, partial(func, *args, **kwargs))
+    return await loop.run_in_executor(executor, partial(func, *args, **kwargs))
 
 # ----- Button UI -----
 class QuizView(discord.ui.View):
     def __init__(self, questions):
-        super().__init__(timeout=30)
+        super().__init__(timeout=60)
         self.questions = questions
         self.answer_history = ""
         self.learning_pp = list()
         self.index = 0
         self.score = 0
+
+    async def on_timeout(self):
+        # timeout 後禁用按鈕，避免殭屍 View 佔記憶體
+        for item in self.children:
+            item.disabled = True
 
     def get_question(self):
         cc = OpenCC('s2twp')
@@ -65,12 +72,14 @@ class QuizView(discord.ui.View):
         """
 
     def split_message(self, text, limit=1900):
+        # discord 一則訊息限制長度為 2000 字，如果生成內容太長就截成多段
         return [
             text[i:i+limit]
             for i in range(0, len(text), limit)
         ]
 
     async def get_note(self):
+        # 根據不熟的概念生成筆記
         misconception = '、'.join(self.learning_pp)
         res = await run_blocking(neo4j_generate_notes, misconception)
         # res = await neo4j_generate_notes(misconception)
@@ -78,7 +87,7 @@ class QuizView(discord.ui.View):
 
     async def check_answer(self, interaction, choice):
         question = self.questions[self.index]
-
+        # 檢查答案並記錄答錯題目
         if choice == question["answer"]:
             self.score += 1
             self.answer_history = self.answer_history + f"- 第{self.index+1}題：答對\n"
@@ -92,6 +101,7 @@ class QuizView(discord.ui.View):
         self.index += 1
 
         if self.index >= len(self.questions):
+            # 測驗結束
             await interaction.response.defer()
 
             await interaction.followup.send(
@@ -106,13 +116,12 @@ class QuizView(discord.ui.View):
                 pp = '、'.join(self.learning_pp)
                 note = f"你可能對這些概念比較弱：{pp}\n以下是你的專屬筆記！\n\n{genetared_note}"
                 # await msg.edit(content=note)
-                chunks = self.split_message(note)
-
+                chunks = self.split_message(note)   # 切割內容
                 await msg.edit(content=chunks[0])
-
                 for chunk in chunks[1:]:
                     await interaction.followup.send(chunk)
         else:
+            # 下一題
             await interaction.response.edit_message(
                 content=self.get_question()
             )
@@ -176,7 +185,7 @@ async def quiz_kg(interaction: discord.Interaction):
 async def document_question(interaction: discord.Interaction, question: str):
     await interaction.response.defer(ephemeral=True)
     try:
-        response = await neo4j_doc_retriever(question, "第七組")
+        response = await run_blocking(neo4j_doc_retriever, question, "第七組")
         content = f"> {question}\n\n{response}"
         await interaction.followup.send(content=content)
     
@@ -189,7 +198,7 @@ async def document_question(interaction: discord.Interaction, question: str):
 async def course_qa(interaction: discord.Interaction, chapter: str, question: str):
     await interaction.response.defer(ephemeral=True)
     try:
-        response = await neo4j_retriever(question, chapter)
+        response = await run_blocking(neo4j_retriever, question, chapter)
         content = f"> {question}\n\n{response['llm']['replies'][0]}"
         await interaction.followup.send(content=content)
     
@@ -208,6 +217,7 @@ async def on_ready():
 
 @bot.event
 async def on_member_join(member):
+    # DM 給進入指定頻道的使用者
     print(f"{member.name} has joined the server!")
 
     try:
@@ -221,23 +231,22 @@ async def on_member_join(member):
     
 @bot.event
 async def on_message(message):
-
+    # 如果是機器人本身傳的訊息就忽略
     if message.author.bot:
         return
-
+    # 如果訊息不是在私人訊息 (DM 頻道) 就忽略
     if not isinstance(message.channel, discord.DMChannel):
         return
 
     user_id = message.author.id
 
-    if user_id not in welcomed_users:
+    if user_id not in welcomed_users:   # 如果是新的使用者就傳送歡迎訊息
         welcomed_users.append(user_id)
         await message.channel.send(DCCHATBOT_WELCOME_MESSAGE)
     else:
         await message.channel.send("你好！若要使用 TABotAI 的其他功能，請使用斜線指令")
 
     await bot.process_commands(message)
-
     print(welcomed_users)
 
 # @bot.event

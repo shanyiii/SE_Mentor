@@ -5,3 +5,16 @@ COLLECTION_NAME = "qdrant_ch6_tags_in_content"
 QDRANT_URL = "http://localhost:6333"
 
 NEO4J_URI = "neo4j://localhost:7687"
+
+TASK_CONFIGS = {
+    "note": {
+        "max_tokens": 2048,
+    },
+    "retriever": {
+        "top_k": 5,
+        "max_tokens": 2048
+    },
+    "filter_test": {
+        "top_k": 3
+    }
+}
