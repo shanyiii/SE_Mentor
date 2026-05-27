@@ -1,14 +1,16 @@
 import discord
-import asyncio
+import asyncio, random
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor
 
 from discord.ext import commands
 from discord import app_commands
 from opencc import OpenCC
+
 from quiz_generater_llm import generate_quiz_llm
 from quiz_generater_kg import generate_quiz_kg
 from haystack_controller import neo4j_generate_notes, neo4j_retriever, neo4j_doc_retriever
+from mongo_controller import DiagnosisQuiz, init_mongo
 from config import DISCORD_TOKEN
 from prompts import DCCHATBOT_WELCOME_MESSAGE
 
@@ -23,19 +25,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 GUILD_ID = discord.Object(id=1460587197227860177)
 welcomed_users = list()
 
-# ----- 題目資料 -----
-# question_list = [
-#     {
-#         "q": "Git 建立新 branch 的指令是？",
-#         "options": ["git fork", "git branch", "git clone", "git init"],
-#         "answer": 1
-#     },
-#     {
-#         "q": "Git 查看 commit 紀錄的指令？",
-#         "options": ["git show", "git history", "git log", "git record"],
-#         "answer": 2
-#     }
-# ]
+cc = OpenCC('s2twp')
 
 # 把同步阻塞函式包成 async，避免卡住 event loop
 async def run_blocking(func, *args, **kwargs):
@@ -59,15 +49,14 @@ class QuizView(discord.ui.View):
             item.disabled = True
 
     def get_question(self):
-        cc = OpenCC('s2twp')
         question = self.questions[self.index]
         return f"""
-        **第{self.index+1}題)** {cc.convert(question["question"])}
+        **第{self.index+1}題)** {cc.convert(question.question)}
 
-        A. {question["options"][0]}
-        B. {question["options"][1]}
-        C. {question["options"][2]}
-        D. {question["options"][3]}
+        A. {question.options[0]}
+        B. {question.options[1]}
+        C. {question.options[2]}
+        D. {question.options[3]}
 
         """
 
@@ -83,19 +72,19 @@ class QuizView(discord.ui.View):
         misconception = '、'.join(self.learning_pp)
         res = await run_blocking(neo4j_generate_notes, misconception)
         # res = await neo4j_generate_notes(misconception)
-        return res["llm"]["replies"][0]
+        return res["llm"]["replies"][0]._content[0].text
 
     async def check_answer(self, interaction, choice):
         question = self.questions[self.index]
         # 檢查答案並記錄答錯題目
-        if choice == question["answer"]:
+        if choice == question.answer:
             self.score += 1
             self.answer_history = self.answer_history + f"- 第{self.index+1}題：答對\n"
             # await interaction.response.send_message(f"正確q(≧▽≦q)答案就是 {question['options'][self.index]}", ephemeral=True)
         else:
-            analysis = self.questions[self.index]["analysis"]
+            analysis = self.questions[self.index].analysis
             self.answer_history = self.answer_history + f"- 第{self.index+1}題：答錯，{analysis}\n"
-            self.learning_pp.append(self.questions[self.index]["concept"])
+            self.learning_pp.append(self.questions[self.index].concept)
             # await interaction.response.send_message("錯誤o(≧口≦)o", ephemeral=True)
         
         self.index += 1
@@ -114,7 +103,7 @@ class QuizView(discord.ui.View):
                 msg = await interaction.followup.send("正在生成筆記…")
                 genetared_note = await self.get_note()
                 pp = '、'.join(self.learning_pp)
-                note = f"你可能對這些概念比較弱：{pp}\n以下是你的專屬筆記！\n\n{genetared_note}"
+                note = f"你可能對這些概念比較弱：{pp}\n以下是你的專屬筆記！\n\n{cc.convert(genetared_note)}"
                 # await msg.edit(content=note)
                 chunks = self.split_message(note)   # 切割內容
                 await msg.edit(content=chunks[0])
@@ -166,13 +155,17 @@ async def quiz_llm(interaction: discord.Interaction):
         # 萬一生成失敗，發送錯誤訊息給使用者
         await interaction.followup.send(f"題目生成失敗：{e}")
 
-@bot.tree.command(name="quiz_kg", description="開始測驗", guild=GUILD_ID)
+@bot.tree.command(name="quiz_kg", description="開始測驗")
 async def quiz_kg(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
+    quiz_client = await init_mongo("TABotAI_quiz")
 
     try:
-        question_list = await generate_quiz_kg()
-        printout_questions(question_list)
+        # question_list = await generate_quiz_kg()
+        quiz_list = await DiagnosisQuiz.find({"chapter": "[04]敏捷開發方法"}).to_list()
+        numbers = random.sample(range(0, 6), 3)
+        question_list = [quiz_list[n] for n in numbers]
+        # printout_questions(question_list)
         view = QuizView(question_list)
         await interaction.followup.send(view.get_question(), view=view)
     
@@ -199,7 +192,7 @@ async def course_qa(interaction: discord.Interaction, chapter: str, question: st
     await interaction.response.defer(ephemeral=True)
     try:
         response = await run_blocking(neo4j_retriever, question, chapter)
-        content = f"> {question}\n\n{response['llm']['replies'][0]}"
+        content = f"> {question}\n\n{cc.convert(response['llm']['replies'][0]._content[0].text)}"
         await interaction.followup.send(content=content)
     
     except Exception as e:

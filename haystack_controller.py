@@ -10,7 +10,7 @@ from haystack.components.builders import ChatPromptBuilder, PromptBuilder
 from haystack.components.converters import PyPDFToDocument
 from haystack.components.preprocessors import DocumentCleaner, DocumentSplitter
 from haystack.components.writers import DocumentWriter
-from haystack.components.rankers import TransformersSimilarityRanker
+from haystack.components.rankers import SentenceTransformersSimilarityRanker
 from haystack.components.generators.chat import OpenAIChatGenerator
 from haystack.components.generators import OpenAIGenerator
 from haystack_integrations.components.generators.anthropic import AnthropicGenerator
@@ -27,13 +27,15 @@ os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 # ----- custom components -----
 @component
 class SourceIdentifier:
-    def __init__(self, api_key: str):
-        self.client = anthropic.Anthropic(api_key=api_key)
+    # LLM 判斷跟問題相關的章節，並回傳 filters
+    def __init__(self):
+        self.client = _claude
 
     @component.output_types(filters=Dict[str, Any])
     def run(self, user_input: str):
         source_identify_prompt = f"""
-        你是一個「軟體工程問題分類器」，請根據使用者的問題內容，判斷該問題可以從哪個軟體工程課程章節得到答案，並僅輸出章節名稱(包含編號)。
+        你是一個「軟體工程問題分類器」，請根據使用者的問題內容，判斷該問題可以從哪「兩個」軟體工程課程章節得到答案，並僅輸出章節名稱(包含編號)，中間用頓號(
+        、)隔開。
 
         【章節清單】
         - [01]軟體危機與軟體流程
@@ -51,20 +53,33 @@ class SourceIdentifier:
         【使用者問題】
         {user_input}
         """
-        res = self.client.beta.messages.create(
-            max_tokens=1024,
-            messages=[
-                {"role":"user", "content":source_identify_prompt}
-            ],
-            model="claude-opus-4-6",
-        )
-        print(f"來源資料標題：{res.content[0].text}")
-        return {
-            "filters": {
-                "field": "source_file",
-                "operator": "==",
-                "value": f"{res.content[0].text}.pdf"
+        res = self.client.run(prompt=source_identify_prompt)
+            
+        print(f"來源資料標題們：{res['replies'][0]}")
+        if len(res['replies'][0]) < 2:
+            return {
+                {
+                    "field": "source_file",
+                    "operator": "==",
+                    "value": f"{res['replies'][0]}.pdf"
+                }
             }
+        
+        sources = res['replies'][0].split("、")
+        return {
+            "operator": "OR",
+            "conditions":[
+                {
+                    "field": "source_file",
+                    "operator": "==",
+                    "value": f"{sources[0]}.pdf"
+                },
+                {
+                    "field": "source_file",
+                    "operator": "==",
+                    "value": f"{sources[1]}.pdf"
+                }
+            ]
         }
 
 # 執行 Neo4j 查詢的自訂義 component
@@ -74,23 +89,98 @@ class Neo4jExecutor:
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
 
     @component.output_types(query_result=str)
-    def run(self, cypher_list: list[str]):
-        # 移除 LLM 可能誤加的 markdown 語法
-        cypher_query = " ".join(cypher_list)
-        clean_query = cypher_query.replace("```cypher", "").replace("```", "").strip()
-        print(f"【final cypher】\n{clean_query}")
-        
+    def run(self, keywords: str):
+        kw_list = keywords.split("、")
+        print(f"[keywords]: {kw_list}")
+
+        # 使用模糊匹配 (fuzzyMatch) 檢索相關的節點 (Concept)
+        cypher = """
+        WITH $keywords AS keywords
+        UNWIND keywords AS keyword
+        MATCH (concept:Concept)
+        WHERE apoc.text.fuzzyMatch(concept.name, keyword)
+        RETURN DISTINCT concept.name AS concept
+        LIMIT 20;
+        """
+
         with self.driver.session() as session:
             try:
-                result = session.run(clean_query)
-                # 取得結果並轉為易讀的字串格式
-                records = [str(record.data()) for record in result]
-                if not records:
-                    return {"query_result": "在知識圖譜中找不到相關關聯。"}
-                print(f"[debug] received records: \n{records}")
-                return {"query_result": "\n".join(records)}
+                result = session.run(cypher, keywords=kw_list)
+                concepts = [record['concept'] for record in result]
+                concepts.extend(kw_list)
+                # records = [str(record.data()) for record in result]
+                if not concepts:
+                    return {"query_result": []}
+                
+                print(f"[debug] received concepts: \n{concepts}")
+                return {"query_result": concepts}
+            
             except Exception as e:
                 return {"query_result": f"Cypher 執行錯誤: {str(e)}"}
+
+    # @component.output_types(query_result=str)
+    # def run(self, cypher_list: list[str]):
+        # # 移除 LLM 可能誤加的 markdown 語法
+        # cypher_query = " ".join(cypher_list)
+        # clean_query = cypher_query.replace("```cypher", "").replace("```", "").strip()
+        # print(f"【final cypher】\n{clean_query}")
+        
+        # with self.driver.session() as session:
+        #     try:
+        #         result = session.run(clean_query)
+        #         # 取得結果並轉為易讀的字串格式
+        #         records = [str(record.data()) for record in result]
+        #         if not records:
+        #             return {"query_result": "在知識圖譜中找不到相關關聯。"}
+        #         print(f"[debug] received records: \n{records}")
+        #         return {"query_result": "\n".join(records)}
+        #     except Exception as e:
+        #         return {"query_result": f"Cypher 執行錯誤: {str(e)}"}
+
+@component
+class VectorSearchFilter:
+    def __init__(self, embedder, retriever, top_k=5):
+        self.embedder = embedder
+        self.retriever = retriever
+        self.top_k = top_k
+
+    @component.output_types(filtered_documents=List[Document])
+    def run(self, question: str, concepts: List[str]):
+        if not concepts:
+            # 如果沒有概念，直接用向量檢索
+            embedding = self.embedder.run(question)['embedding']
+            docs = self.retriever.run(
+                query_embedding=embedding,
+                top_k=self.top_k
+            )
+            return {"filtered_documents": docs.get('documents', [])}
+        
+        # 構建過濾條件：文檔必須包含至少一個概念標籤
+        filters = {
+            "operator": "OR",
+            "conditions": [
+                {
+                    "field": "tags",
+                    "operator": "in",
+                    "value": concept
+                } for concept in concepts
+            ]
+        }
+        
+        # 向量檢索 + 過濾
+        # run_question = f"關鍵字：{'、'.join(concepts)}\n問題：{question}"
+        # print(f"[傳入的概念]: {concepts}")
+        embedding = self.embedder.run('、'.join(concepts[0]))['embedding']
+        docs = self.retriever.run(
+            query_embedding=embedding,
+            top_k=self.top_k,
+            filters=filters
+        )
+        
+        filtered_docs = docs.get('documents', [])
+        print(f"[向量檢索返回]: {len(filtered_docs)} 個文檔")
+        print(filtered_docs)
+        return {"filtered_documents": filtered_docs}
 
 # ----- 初始化元件 -----
 document_store = Neo4jDocumentStore(
@@ -102,7 +192,7 @@ document_store = Neo4jDocumentStore(
     index="document-embeddings",
 )
 _embedder =  SentenceTransformersTextEmbedder(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-_claude = AnthropicGenerator(api_key=Secret.from_token(CLAUDE_API_KEY), model="claude-opus-4-6")
+_claude = AnthropicGenerator(api_key=Secret.from_token(CLAUDE_API_KEY), model="claude-haiku-4-5")
 _gpt = OpenAIGenerator(api_key=Secret.from_env_var("OPENAI_API_KEY"), model="gpt-4o-mini")
 _gpt_chat = OpenAIChatGenerator(api_key=Secret.from_env_var("OPENAI_API_KEY"), model="gpt-4o-mini")
 _neo4j_retriever = Neo4jEmbeddingRetriever(document_store=document_store)
@@ -167,13 +257,13 @@ def upload_to_vector_db(file_path: list):
 
 # ----- pipeline builders functions -----
 def _build_retriever_pipeline(prompt_builder: ChatPromptBuilder) -> Pipeline:
-    ranker = TransformersSimilarityRanker(top_k=3)
+    ranker = SentenceTransformersSimilarityRanker(top_k=3)
 
     pipeline = Pipeline()
     pipeline.add_component("text_embedder", _embedder)
     pipeline.add_component("retriever", _neo4j_retriever)
     pipeline.add_component("ranker", ranker)
-    pipeline.add_component("response_prompt", prompt_builder)
+    pipeline.add_component("prompt_builder", prompt_builder)
     # pipeline.add_component("source_identifier", SourceIdentifier(CLAUDE_API_KEY))
     pipeline.add_component("llm", _gpt_chat)
     # pipeline.add_component("llm", _claude)
@@ -181,45 +271,56 @@ def _build_retriever_pipeline(prompt_builder: ChatPromptBuilder) -> Pipeline:
     # pipeline.connect("source_identifier.filters", "retriever.filters")
     pipeline.connect("text_embedder.embedding", "retriever.query_embedding")
     pipeline.connect("retriever.documents", "ranker.documents")
-    pipeline.connect("ranker.documents", "response_prompt.documents")
-    # pipeline.connect("response_prompt.prompt", "llm.messages")
-    pipeline.connect("response_prompt.prompt", "llm")
+    pipeline.connect("ranker.documents", "prompt_builder.documents")
+    # pipeline.connect("prompt_builder.prompt", "llm.messages")
+    pipeline.connect("prompt_builder.prompt", "llm.messages")
 
     return pipeline
 
-def _build_kg_pipeline(cypher_prompt_builder: PromptBuilder) -> Pipeline:
+def _build_kg_pipeline(kw_prompt_builder: PromptBuilder) -> Pipeline:
     answer_prompt_template = """
-    你是一位專業的軟體工程教學助教。請根據以下從知識圖譜檢索出來的「結構化資料」，回答學生的問題。
+    你是一位專業的軟體工程教學助教。請根據以下檢索到的教學資料，用台灣繁體中文回答學生的問題。
 
-    【檢索資料】
-    {{graph_results}}
+    【教學資料】
+    {% for doc in documents %}
+    ---
+    [{{ doc.meta.tags }}]
+    {{ doc.content }}
+    {% endfor %}
 
     【學生問題】
     {{question}}
 
-    如果有語義相同的資料，請合併為一個。例如：「會員清單瀏覽」跟「瀏覽會員清單」請合併為「瀏覽會員清單」。
-    如果資料不足，請直接輸出「資料不足無法回答」。
-    如果沒有資料，或是查詢語法有誤，請直接輸出「查無資料，請檢查查詢語法」。
+    請基於教學資料回答，控制在 5-7 句話，總字數不超過 500 字。
+    如果資料不足，請說「資料不足無法完整回答」。
     答案：
     """
 
     pipeline = Pipeline()
-    pipeline.add_component("cypher_prompt", cypher_prompt_builder)
+    pipeline.add_component("kw_prompt", kw_prompt_builder)
     pipeline.add_component("cypher_llm", _claude)
     pipeline.add_component("neo4j_executor", _neo4j_executor)
     pipeline.add_component("answer_prompt", PromptBuilder(template=answer_prompt_template))
+    pipeline.add_component("vector_filter", VectorSearchFilter(
+        embedder=_embedder,
+        retriever=_neo4j_retriever,
+        top_k=5
+    ))
     pipeline.add_component("answer_llm", _gpt)
 
-    pipeline.connect("cypher_prompt", "cypher_llm")
-    pipeline.connect("cypher_llm.replies", "neo4j_executor.cypher_list")
-    pipeline.connect("neo4j_executor.query_result", "answer_prompt.graph_results")
-    pipeline.connect("answer_prompt", "answer_llm")
+    pipeline.connect("kw_prompt.prompt", "cypher_llm.prompt")
+    pipeline.connect("cypher_llm.replies", "neo4j_executor.keywords")
+    pipeline.connect("neo4j_executor.query_result", "vector_filter.concepts")
+    pipeline.connect("vector_filter.filtered_documents", "answer_prompt.documents")
+    pipeline.connect("answer_prompt.prompt", "answer_llm.prompt")
 
     return pipeline
 
-def neo4j_retriever(question: str, chapter: str) -> str:
-    file_names = ["[01]軟體危機與軟體流程", "[02]基礎需求工程", "[03]使用者故事分析", "[04]敏捷開發方法", "[05]基礎專案管理與看板", "[06]版本控制", "[07]軟體設計-系統設計", "[08]軟體設計-模組設計", "[09]軟體測試", "[10]進階軟體測試", "[11]DevOps自動化建置管理"]
-    chapter_name = file_names[int(chapter)-1]
+# ----- task functions -----
+def neo4j_retriever(question: str, chapter: str = None) -> str:
+    if chapter:
+        file_names = ["[01]軟體危機與軟體流程", "[02]基礎需求工程", "[03]使用者故事分析", "[04]敏捷開發方法", "[05]基礎專案管理與看板", "[06]版本控制", "[07]軟體設計-系統設計", "[08]軟體設計-模組設計", "[09]軟體測試", "[10]進階軟體測試", "[11]DevOps自動化建置管理"]
+        chapter_name = file_names[int(chapter)-1]
     response_template = [
         ChatMessage.from_user(
             """
@@ -236,21 +337,20 @@ def neo4j_retriever(question: str, chapter: str) -> str:
         )
     ]
 
+    sourceIdentifier = SourceIdentifier()
+    filters = sourceIdentifier.run(question)
+
     pipeline = _build_retriever_pipeline(ChatPromptBuilder(template=response_template, required_variables=["question"]))
 
     result = pipeline.run(
         data={
             # "source_identifier": {"user_input": question},
             "text_embedder": {"text": question}, 
-            "response_prompt": {"question": question},
+            "prompt_builder": {"question": question},
             "ranker": {"query": question},
             "retriever": {
                 "top_k": TASK_CONFIGS["retriever"]["top_k"],
-                "filters": {
-                    "field": "source_file",
-                    "operator": "==",
-                    "value": f"{chapter_name}.pdf"
-                }
+                "filters": filters
             },
             # "llm":{"generation_kwargs":{"max_tokens": TASK_CONFIGS["retriever"]["max_tokens"]}}
         },
@@ -288,6 +388,7 @@ def neo4j_generate_notes(concept: str) -> str:
     result = pipeline.run(
         data={
             "text_embedder": {"text": concept}, 
+            "ranker": {"query": concept},
             "prompt_builder": {"concept": concept},
             "llm": {"generation_kwargs":{"max_tokens": TASK_CONFIGS["note"]["max_tokens"]}}
         },
@@ -298,33 +399,46 @@ def neo4j_generate_notes(concept: str) -> str:
 
 def neo4j_textbook_kg_retriever(question: str) -> str:
     # 將問題轉為 Cypher 的 Prompt
-    cypher_prompt_template = """
-    你是一位 Neo4j 專家。請根據以下 Schema 將使用者的問題轉化為精確的 Cypher 查詢語句，並以 string 形式輸出。
+    # cypher_prompt_template = """
+    # 你是一位 Neo4j 專家。請根據以下 Schema 將使用者的問題轉化為精確的 Cypher 查詢語句，並以 string 形式輸出。
+
+    # 【Schema 資訊】
+    # - Labels: Requirement, SystemComponent, API, TestCase, Actor, General, Concept, Technology, Methodology
+    # - Properties: name, group, source_files, description, (以及其他從文件提取的屬性)
+    # - Relationships: 是, 部分, 實作, 使用, 操作, 依賴, 改善, 解決
+
+    # 【限制條件】
+    # - 只輸出 Cypher 語句，不要任何解釋或 markdown 標籤。
+    # - 盡量使用關鍵字模糊匹配 (CONTAINS) 以提高檢索成功率。
+
+    # 使用者的問題: {{question}}
+    # 生成的 Cypher:
+    # """
+
+    keyword_prompt_template = """
+    請根據以下 Neo4j Schema 替使用者的問題生成 2 至 3 個關鍵字，用來檢索知識圖譜中的實體。請僅輸出關鍵字，且關鍵字之間請用頓號(、)隔開。
 
     【Schema 資訊】
-    - Labels: Requirement, SystemComponent, API, TestCase, Actor, General, Concept, Technology, Methodology
-    - Properties: name, group, source_files, description, (以及其他從文件提取的屬性)
+    - Labels: Concept, Technology, Methodology
+    - Properties: name, group, source_files, description
     - Relationships: 是, 部分, 實作, 使用, 操作, 依賴, 改善, 解決
 
-    【限制條件】
-    - 只輸出 Cypher 語句，不要任何解釋或 markdown 標籤。
-    - 盡量使用關鍵字模糊匹配 (CONTAINS) 以提高檢索成功率。
-
     使用者的問題: {{question}}
-    生成的 Cypher:
+    生成的關鍵字:
     """
 
-    pipeline = _build_kg_pipeline(PromptBuilder(template=cypher_prompt_template))
+    pipeline = _build_kg_pipeline(PromptBuilder(template=keyword_prompt_template))
 
     result = pipeline.run(
         data={
-            "cypher_prompt": {"question": question},
+            "kw_prompt": {"question": question},
             "answer_prompt": {"question": question},
-            "neo4j_executor": {}
+            "neo4j_executor": {},
+            "vector_filter": {"question": question}
         },
         include_outputs_from=["cypher_llm", "neo4j_executor", "answer_llm"]
     )
-    print(f"【cypher from llm】:\n{result['cypher_llm']['replies']}")
+    # print(f"【cypher from llm】:\n{result['cypher_llm']['replies']}")
     # return result
     return result["answer_llm"]["replies"][0]
 
@@ -387,7 +501,7 @@ async def batch_tags(md_documents):
 
     client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
     res = client.beta.messages.create(
-            max_tokens=4096,
+            max_tokens=400,
             messages=[
                 {"role":"user", "content":prompt}
             ],
@@ -454,13 +568,16 @@ if __name__ == '__main__':
 
     # asyncio.run(filter_retrieval_test())
 
-    question = "請問白箱測試跟黑箱測試的差異是什麼"
-    res = neo4j_retriever(question, "9")
-    for d in  res["retriever"]["documents"]:
-        print(d.content)
-    print("="*30)
-    print(res["llm"]["replies"][0]._content[0].text)
+    question = "請問git有哪些指令可以做分支合併"
+    # res = neo4j_retriever(question)
+    # for d in  res["retriever"]["documents"]:
+    #     print(d.content)
+    # print("="*30)
+    # print(res["llm"]["replies"][0]._content[0].text)
     # print(res["llm"]["replies"][0])
+
+    res = neo4j_textbook_kg_retriever(question)
+    print(res)
 
     # upload_to_vector_db(["C:\\Users\\shanyiii\\Desktop\\mine\\1141軟體工程\\[06]版本控制.pdf"])
 

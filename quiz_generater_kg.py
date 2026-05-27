@@ -1,7 +1,8 @@
-import os, ast
+import os, ast, asyncio
 from pydantic import BaseModel
 
 from neo4j_impoter import Neo4jImoprter
+from mongo_controller import DiagnosisQuiz, init_mongo
 from config import NEO4J_PASSWORD, OPENAI_API_KEY
 
 from haystack.utils import Secret
@@ -24,13 +25,14 @@ class Question(BaseModel):
 class QuestionList(BaseModel):
     questions: list[Question]
 
-async def get_core_nodes():
-    cypher = """
-        MATCH (c:Entity)
-        WITH c, count { (c)--() } AS degree
+def get_core_nodes(chapter: str):
+    cypher = f"""
+        MATCH (n:Concept)
+        WHERE '{chapter}.pdf' IN n.source_files
+        WITH n, count {{ (n)--() }} AS degree
         ORDER BY degree DESC
         LIMIT 3
-        RETURN c.name AS name
+        RETURN n.name AS name
     """
     records = list()
     importer = Neo4jImoprter(uri="neo4j://localhost:7687", username="neo4j", password=NEO4J_PASSWORD)
@@ -38,12 +40,15 @@ async def get_core_nodes():
         if importer.connect():
             records = importer.query_retrival(cypher)
             # print(records)
+    except Exception as e:
+        print(f"[quiz_generator]: Got an exception when querying: {e}")
+        return None
     finally:
         importer.close()
     return records
 
-async def generate_quiz_kg() -> str:
-    core_nodes = await get_core_nodes()
+def generate_quiz_kg(chapter: str) -> str:
+    core_nodes = get_core_nodes(chapter)
     if core_nodes:
         core_nodes_str = '、'.join(core_nodes)
         print(core_nodes_str)
@@ -109,7 +114,32 @@ async def generate_quiz_kg() -> str:
     q_dicts = [dict(q) for q in output_dicts["questions"]]
     return q_dicts
 
+async def upload_quiz_to_mongo():
+    quiz_client = await init_mongo("TABotAI_quiz")
+    core_chapters = ["[04]敏捷開發方法"]
+    for chapter in core_chapters:
+        quizes = generate_quiz_kg(chapter)
+        # print(quizes)
+        diagnosis_quizes = list()
+        for quiz in quizes:
+            diagnosis_quiz = DiagnosisQuiz(
+                question=quiz["question"],
+                options=quiz["options"],
+                answer=quiz["answer"],
+                analysis=quiz["analysis"],
+                concept=quiz["concept"],
+                chapter=chapter
+            )
+            diagnosis_quizes.append(diagnosis_quiz)
+    await DiagnosisQuiz.insert_many(diagnosis_quizes)
+
+async def get_quizes():
+    quiz_client = await init_mongo("TABotAI_quiz")
+    quiz_list = await DiagnosisQuiz.find({"chapter": "[04]敏捷開發方法"}).to_list()
+    for quiz in quiz_list:
+        print(quiz.question)
+
 if __name__ == '__main__':    
-    quizes = generate_quiz_kg()
-    print(quizes)
+    asyncio.run(upload_quiz_to_mongo())
+    # asyncio.run(get_quizes())
     
