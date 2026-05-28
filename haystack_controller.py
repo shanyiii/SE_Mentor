@@ -54,31 +54,16 @@ class SourceIdentifier:
         {user_input}
         """
         res = self.client.run(prompt=source_identify_prompt)
-            
-        print(f"來源資料標題們：{res['replies'][0]}")
-        if len(res['replies'][0]) < 2:
-            return {
-                {
-                    "field": "source_file",
-                    "operator": "==",
-                    "value": f"{res['replies'][0]}.pdf"
-                }
-            }
-        
         sources = res['replies'][0].split("、")
+        print(f"來源資料標題們：{sources}")
         return {
             "operator": "OR",
             "conditions":[
                 {
                     "field": "source_file",
                     "operator": "==",
-                    "value": f"{sources[0]}.pdf"
-                },
-                {
-                    "field": "source_file",
-                    "operator": "==",
-                    "value": f"{sources[1]}.pdf"
-                }
+                    "value": f"{source}.pdf"
+                } for source in sources
             ]
         }
 
@@ -260,12 +245,12 @@ def _build_retriever_pipeline(prompt_builder: ChatPromptBuilder) -> Pipeline:
     ranker = SentenceTransformersSimilarityRanker(top_k=3)
 
     pipeline = Pipeline()
-    pipeline.add_component("text_embedder", _embedder)
-    pipeline.add_component("retriever", _neo4j_retriever)
+    pipeline.add_component("text_embedder", SentenceTransformersTextEmbedder(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"))
+    pipeline.add_component("retriever", Neo4jEmbeddingRetriever(document_store=document_store))
     pipeline.add_component("ranker", ranker)
     pipeline.add_component("prompt_builder", prompt_builder)
     # pipeline.add_component("source_identifier", SourceIdentifier(CLAUDE_API_KEY))
-    pipeline.add_component("llm", _gpt_chat)
+    pipeline.add_component("llm", OpenAIChatGenerator(api_key=Secret.from_env_var("OPENAI_API_KEY"), model="gpt-4o-mini"))
     # pipeline.add_component("llm", _claude)
 
     # pipeline.connect("source_identifier.filters", "retriever.filters")
@@ -298,15 +283,15 @@ def _build_kg_pipeline(kw_prompt_builder: PromptBuilder) -> Pipeline:
 
     pipeline = Pipeline()
     pipeline.add_component("kw_prompt", kw_prompt_builder)
-    pipeline.add_component("cypher_llm", _claude)
-    pipeline.add_component("neo4j_executor", _neo4j_executor)
+    pipeline.add_component("cypher_llm", AnthropicGenerator(api_key=Secret.from_token(CLAUDE_API_KEY), model="claude-haiku-4-5"))
+    pipeline.add_component("neo4j_executor",  Neo4jExecutor("bolt://localhost:7687", "neo4j", NEO4J_PASSWORD))
     pipeline.add_component("answer_prompt", PromptBuilder(template=answer_prompt_template))
     pipeline.add_component("vector_filter", VectorSearchFilter(
         embedder=_embedder,
         retriever=_neo4j_retriever,
         top_k=5
     ))
-    pipeline.add_component("answer_llm", _gpt)
+    pipeline.add_component("answer_llm", OpenAIGenerator(api_key=Secret.from_env_var("OPENAI_API_KEY"), model="gpt-4o-mini"))
 
     pipeline.connect("kw_prompt.prompt", "cypher_llm.prompt")
     pipeline.connect("cypher_llm.replies", "neo4j_executor.keywords")
@@ -317,7 +302,7 @@ def _build_kg_pipeline(kw_prompt_builder: PromptBuilder) -> Pipeline:
     return pipeline
 
 # ----- task functions -----
-def neo4j_retriever(question: str, chapter: str = None) -> str:
+def neo4j_retriever(question: str, chapter: str = None) -> dict[str, Any]:
     if chapter:
         file_names = ["[01]軟體危機與軟體流程", "[02]基礎需求工程", "[03]使用者故事分析", "[04]敏捷開發方法", "[05]基礎專案管理與看板", "[06]版本控制", "[07]軟體設計-系統設計", "[08]軟體設計-模組設計", "[09]軟體測試", "[10]進階軟體測試", "[11]DevOps自動化建置管理"]
         chapter_name = file_names[int(chapter)-1]
@@ -397,7 +382,7 @@ def neo4j_generate_notes(concept: str) -> str:
 
     return result
 
-def neo4j_textbook_kg_retriever(question: str) -> str:
+def neo4j_textbook_kg_retriever(question: str) -> dict[str, Any]:
     # 將問題轉為 Cypher 的 Prompt
     # cypher_prompt_template = """
     # 你是一位 Neo4j 專家。請根據以下 Schema 將使用者的問題轉化為精確的 Cypher 查詢語句，並以 string 形式輸出。
@@ -436,11 +421,11 @@ def neo4j_textbook_kg_retriever(question: str) -> str:
             "neo4j_executor": {},
             "vector_filter": {"question": question}
         },
-        include_outputs_from=["cypher_llm", "neo4j_executor", "answer_llm"]
+        include_outputs_from=["vector_filter", "neo4j_executor", "answer_llm"]
     )
     # print(f"【cypher from llm】:\n{result['cypher_llm']['replies']}")
     # return result
-    return result["answer_llm"]["replies"][0]
+    return result
 
 def neo4j_doc_retriever(question: str, group_id: str) -> str:
     # 將問題轉為 Cypher 的 Prompt
