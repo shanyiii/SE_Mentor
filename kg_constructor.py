@@ -1,4 +1,5 @@
 import re, ast, time, random, json, gc
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI
 import anthropic
 
@@ -46,9 +47,9 @@ def entities_extraction(user_input, prompt):
     #     contents=user_input
     # )
 
-    # entities = re.sub(r'[\r\n]', '', res.choices[0].message.content)
-    entities = re.sub(r'[\r\n]', '', res.content[0].text)
-    # entities = re.sub(r'[\r\n]', '', res.text)
+    # entities = re.sub(r'[\r\n]', '', res.choices[0].message.content)  #gpt
+    entities = re.sub(r'[\r\n]', '', res.content[0].text)   # claude
+    # entities = re.sub(r'[\r\n]', '', res.text)    # gemini
     # print(entities)
 
     match = re.search(r"\[.*?\]", entities)
@@ -68,6 +69,7 @@ def entities_extraction(user_input, prompt):
 #     reraise=True
 # )
 def relations_extraction(prompt, entities_list, user_input):
+    doc_content = user_input.page_content if hasattr(user_input, 'page_content') else str(user_input)
     input_data = f"""
     實體列表如下：
 
@@ -78,7 +80,7 @@ def relations_extraction(prompt, entities_list, user_input):
     文章內容如下：
 
     <article>
-    {user_input}
+    {doc_content}
     </article>
     """
 
@@ -92,8 +94,8 @@ def relations_extraction(prompt, entities_list, user_input):
     # )
 
     res = client.messages.parse(
-        model="claude-opus-4-6",
-        max_tokens=4096,
+        model="claude-sonnet-4-6",
+        max_tokens=4200,
         messages=[
             {"role":"user", "content":prompt},
             {"role":"user", "content":input_data}
@@ -114,7 +116,7 @@ def relations_extraction(prompt, entities_list, user_input):
     # print(res.text)
     # return res.output_parsed  #gpt
     return res.parsed_output    # claude
-    # return res.parsed
+    # return res.parsed     # gemini
 
 if __name__ == '__main__':
     chapter_num = 11
@@ -126,36 +128,49 @@ if __name__ == '__main__':
 
     cleaned_md = clean_markdown(md_content)
     md_documents = md_splitter(cleaned_md)
-    # # print(input_data)
+    # print(input_data)
 
+    doc_entity_pairs = list()
     page_entities_list = list()
-    for doc in md_documents:
-        try:
-            page_entities = entities_extraction(doc.page_content, ENTITY_PROMPT_4_TEXTBOOK)
-            if page_entities:
-                page_entities_list.append(page_entities)
-            # time.sleep(random.uniform(0.5, 1.5))
-        except Exception as e:
-            print(f"Exception received: {e}")
-            # time.sleep(10)
-    
-    entities_list = list(set(entity.lower() for page_entities in page_entities_list for entity in page_entities))
-    print("實體抽取完成")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_to_doc = {executor.submit(entities_extraction, doc.page_content, ENTITY_PROMPT_4_TEXTBOOK): doc for doc in md_documents}
+        
+        for future in as_completed(future_to_doc):
+            doc = future_to_doc[future]
+            try:
+                page_entities = future.result()
+                if page_entities:
+                    cleaned_page_entities = list(set(e.lower() for e in page_entities))
+                    doc_entity_pairs.append((doc, cleaned_page_entities))
+                    page_entities_list.extend(cleaned_page_entities)
+            except Exception as e:
+                print(f"實體抽取 Exception: {e}")
+
     with open(f"md_files\\JSON\\kgs\\textbook_entities_ch{chapter_num}.json", 'w', encoding="utf-8") as f:
-        json.dump(entities_list, f, indent=2, ensure_ascii=False)
-    # print(entities_list)
+        json.dump(page_entities_list, f, indent=2, ensure_ascii=False)
 
     list_of_TripleList = list()
-    for doc in md_documents:
-        try:
-            triples = relations_extraction(TRIPLE_PROMPT_4_TEXTBOOK, entities_list, doc)
-            if triples:
-                list_of_TripleList.append(triples)
-        except Exception as e:
-            print(f"Exception received: {e}")
+    print("實體抽取完成")
+    
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_to_relation = {
+            executor.submit(relations_extraction, TRIPLE_PROMPT_4_TEXTBOOK, entities, doc): doc 
+            for doc, entities in doc_entity_pairs if entities
+        }
+        
+        for future in as_completed(future_to_relation):
+            try:
+                triples = future.result()
+                if triples:
+                    list_of_TripleList.append(triples)
+            except Exception as e:
+                print(f"關係抽取 Exception: {e}")
+
     data_to_save = [t.model_dump(mode="json") for triples in list_of_TripleList for t in triples.triples]
     with open(f"md_files\\JSON\\kgs\\textbook_triples_ch{chapter_num}.json", 'w', encoding="utf-8") as f:
         json.dump(data_to_save, f, indent=2, ensure_ascii=False)
+    
     print("關係抽取完成")
     triple_list = TripleList(triples=data_to_save)
     del list_of_TripleList
@@ -163,7 +178,7 @@ if __name__ == '__main__':
 
     # ======直接開啟抽取好的KG======
 
-    # with open("md_files\\JSON\\textbook_triples_ch4.json", 'r', encoding='utf-8') as f:
+    # with open("md_files\\JSON\\kgs\\textbook_triples_ch9_shorter.json", 'r', encoding='utf-8') as f:
     #     triple_dict = json.load(f)
     # triple_list = TripleList(triples=triple_dict)
     

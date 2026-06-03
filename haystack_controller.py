@@ -123,6 +123,94 @@ class Neo4jExecutor:
         #         return {"query_result": f"Cypher 執行錯誤: {str(e)}"}
 
 @component
+class DescriptionBasedReasoning:
+    """利用節點和邊的 description 直接推理"""
+    def __init__(self, uri, user, password):
+        self.driver = GraphDatabase.driver(uri, auth=(user, password))
+
+    @component.output_types(knowledge_base=str)
+    def run(self, keywords: str):  
+        kw_list = keywords.split("、")
+        print(f"[keywords]: {kw_list}")  
+
+        cypher = """
+        WITH $keywords AS keywords
+        UNWIND keywords AS keyword
+        MATCH (entity)
+        WHERE apoc.text.fuzzyMatch(entity.name, keyword)
+        OPTIONAL MATCH (entity)-[rel]-(neighbor)
+        RETURN 
+            entity.name AS entityName,
+            entity.description AS entityDesc,
+            type(rel) AS relationType,
+            rel.description AS relationDesc,
+            neighbor.name AS neighborName,
+            neighbor.description AS neighborDesc
+        LIMIT 20;
+        """
+        with self.driver.session() as session:
+            try:
+                result = session.run(cypher, keywords=kw_list)
+                knowledge_text = self._format_knowledge(result)
+                # records = [str(record.data()) for record in result]
+                if not knowledge_text:
+                    return {"knowledge_base": "查無資料"}
+                
+                # print(f"[debug] knowledge text: \n{knowledge_text}")
+                return {"knowledge_base": knowledge_text}
+            
+            except Exception as e:
+                print(f"[error] Cypher 執行錯誤: {str(e)}")
+                return {"knowledge_base": "查無資料"}
+
+    def _format_knowledge(self, results):
+        """將查詢結果格式化為自然語言"""
+        records = list(results)
+        
+        if not records:
+            return None
+        
+        # 依節點分組
+        entity_info = {}
+        for record in records:
+            entity = record['entityName']
+            if entity not in entity_info:
+                entity_info[entity] = {
+                    'description': record['entityDesc'],
+                    'relations': []
+                }
+            
+            if record['neighborName']:
+                entity_info[entity]['relations'].append({
+                    'type': record['relationType'],
+                    'typeDesc': record['relationDesc'],
+                    'target': record['neighborName'],
+                    'targetDesc': record['neighborDesc']
+                })
+        
+        knowledge_text = []
+        for entity, info in entity_info.items():
+            # 實體及其定義
+            knowledge_text.append(f"【{entity}】\n{info['description']}")
+            
+            # 相關實體
+            if info['relations']:
+                knowledge_text.append("\n相關概念：")
+                for rel in info['relations']:
+                    rel_desc = rel['typeDesc'] or f"({rel['type']})"
+                    knowledge_text.append(
+                        f"- {entity} {rel['type']} {rel['target']}: {rel_desc}"
+                    )
+                    if rel['targetDesc']:
+                        knowledge_text.append(f"    {rel['target']} 是 {rel['targetDesc']}")
+            
+            knowledge_text.append("")
+        
+        # print(len(knowledge_text))
+        # print(knowledge_text[16:18])
+        return "\n".join(knowledge_text)
+
+@component
 class VectorSearchFilter:
     def __init__(self, embedder, retriever, top_k=5):
         self.embedder = embedder
@@ -263,15 +351,28 @@ def _build_retriever_pipeline(prompt_builder: ChatPromptBuilder) -> Pipeline:
     return pipeline
 
 def _build_kg_pipeline(kw_prompt_builder: PromptBuilder) -> Pipeline:
+    # answer_prompt_template = """
+    # 你是一位專業的軟體工程教學助教。請根據以下檢索到的教學資料，用台灣繁體中文回答學生的問題。
+
+    # 【教學資料】
+    # {% for doc in documents %}
+    # ---
+    # [{{ doc.meta.tags }}]
+    # {{ doc.content }}
+    # {% endfor %}
+
+    # 【學生問題】
+    # {{question}}
+
+    # 請基於教學資料回答，控制在 5-7 句話，總字數不超過 500 字。
+    # 如果資料不足，請說「資料不足無法完整回答」。
+    # 答案：
+    # """
     answer_prompt_template = """
     你是一位專業的軟體工程教學助教。請根據以下檢索到的教學資料，用台灣繁體中文回答學生的問題。
 
     【教學資料】
-    {% for doc in documents %}
-    ---
-    [{{ doc.meta.tags }}]
-    {{ doc.content }}
-    {% endfor %}
+    {{documents}}
 
     【學生問題】
     {{question}}
@@ -282,22 +383,36 @@ def _build_kg_pipeline(kw_prompt_builder: PromptBuilder) -> Pipeline:
     """
 
     pipeline = Pipeline()
+
+    # 關鍵字 + 圖譜中的 description
     pipeline.add_component("kw_prompt", kw_prompt_builder)
     pipeline.add_component("cypher_llm", AnthropicGenerator(api_key=Secret.from_token(CLAUDE_API_KEY), model="claude-haiku-4-5"))
-    pipeline.add_component("neo4j_executor",  Neo4jExecutor("bolt://localhost:7687", "neo4j", NEO4J_PASSWORD))
+    pipeline.add_component("desc_reasoner",  DescriptionBasedReasoning("bolt://localhost:7687", "neo4j", NEO4J_PASSWORD))
     pipeline.add_component("answer_prompt", PromptBuilder(template=answer_prompt_template))
-    pipeline.add_component("vector_filter", VectorSearchFilter(
-        embedder=_embedder,
-        retriever=_neo4j_retriever,
-        top_k=5
-    ))
     pipeline.add_component("answer_llm", OpenAIGenerator(api_key=Secret.from_env_var("OPENAI_API_KEY"), model="gpt-4o-mini"))
 
     pipeline.connect("kw_prompt.prompt", "cypher_llm.prompt")
-    pipeline.connect("cypher_llm.replies", "neo4j_executor.keywords")
-    pipeline.connect("neo4j_executor.query_result", "vector_filter.concepts")
-    pipeline.connect("vector_filter.filtered_documents", "answer_prompt.documents")
+    pipeline.connect("cypher_llm.replies", "desc_reasoner.keywords")
+    pipeline.connect("desc_reasoner.knowledge_base", "answer_prompt.documents")
     pipeline.connect("answer_prompt.prompt", "answer_llm.prompt")
+
+    # 舊的 KG 檢索 (純關鍵字)
+    # pipeline.add_component("kw_prompt", kw_prompt_builder)
+    # pipeline.add_component("cypher_llm", AnthropicGenerator(api_key=Secret.from_token(CLAUDE_API_KEY), model="claude-haiku-4-5"))
+    # pipeline.add_component("neo4j_executor",  Neo4jExecutor("bolt://localhost:7687", "neo4j", NEO4J_PASSWORD))
+    # pipeline.add_component("answer_prompt", PromptBuilder(template=answer_prompt_template))
+    # pipeline.add_component("vector_filter", VectorSearchFilter(
+    #     embedder=_embedder,
+    #     retriever=_neo4j_retriever,
+    #     top_k=5
+    # ))
+    # pipeline.add_component("answer_llm", OpenAIGenerator(api_key=Secret.from_env_var("OPENAI_API_KEY"), model="gpt-4o-mini"))
+
+    # pipeline.connect("kw_prompt.prompt", "cypher_llm.prompt")
+    # pipeline.connect("cypher_llm.replies", "neo4j_executor.keywords")
+    # pipeline.connect("neo4j_executor.query_result", "vector_filter.concepts")
+    # pipeline.connect("vector_filter.filtered_documents", "answer_prompt.documents")
+    # pipeline.connect("answer_prompt.prompt", "answer_llm.prompt")
 
     return pipeline
 
@@ -322,8 +437,8 @@ def neo4j_retriever(question: str, chapter: str = None) -> dict[str, Any]:
         )
     ]
 
-    sourceIdentifier = SourceIdentifier()
-    filters = sourceIdentifier.run(question)
+    # sourceIdentifier = SourceIdentifier()
+    # filters = sourceIdentifier.run(question)
 
     pipeline = _build_retriever_pipeline(ChatPromptBuilder(template=response_template, required_variables=["question"]))
 
@@ -335,7 +450,12 @@ def neo4j_retriever(question: str, chapter: str = None) -> dict[str, Any]:
             "ranker": {"query": question},
             "retriever": {
                 "top_k": TASK_CONFIGS["retriever"]["top_k"],
-                "filters": filters
+                # "filters": filters
+                "filters": {
+                    "field": "source_file",
+                    "operator": "==",
+                    "value": f"{chapter_name}.pdf"
+                }
             },
             # "llm":{"generation_kwargs":{"max_tokens": TASK_CONFIGS["retriever"]["max_tokens"]}}
         },
@@ -418,10 +538,10 @@ def neo4j_textbook_kg_retriever(question: str) -> dict[str, Any]:
         data={
             "kw_prompt": {"question": question},
             "answer_prompt": {"question": question},
-            "neo4j_executor": {},
-            "vector_filter": {"question": question}
+            # "neo4j_executor": {},
+            # "vector_filter": {"question": question}
         },
-        include_outputs_from=["vector_filter", "neo4j_executor", "answer_llm"]
+        include_outputs_from=["answer_llm", "desc_reasoner"]
     )
     # print(f"【cypher from llm】:\n{result['cypher_llm']['replies']}")
     # return result
@@ -553,7 +673,7 @@ if __name__ == '__main__':
 
     # asyncio.run(filter_retrieval_test())
 
-    question = "請問git有哪些指令可以做分支合併"
+    question = "請問有哪git些指令可以合併分支？"
     # res = neo4j_retriever(question)
     # for d in  res["retriever"]["documents"]:
     #     print(d.content)
@@ -562,7 +682,9 @@ if __name__ == '__main__':
     # print(res["llm"]["replies"][0])
 
     res = neo4j_textbook_kg_retriever(question)
-    print(res)
+    print(res["answer_llm"]["replies"][0])
+    print("="*30)
+    print(res["desc_reasoner"]["knowledge_base"])
 
     # upload_to_vector_db(["C:\\Users\\shanyiii\\Desktop\\mine\\1141軟體工程\\[06]版本控制.pdf"])
 

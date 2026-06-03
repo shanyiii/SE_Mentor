@@ -14,23 +14,27 @@ class EntityLabel(str, Enum):
     SystemComponent = "SystemComponent"
     API = "API"
     TestCase = "TestCase"
-    General = "General"
     Concept = "Concept"
     Technology = "Technology"
     Methodology = "Methodology"
+    General = "General"
 
 class KeyValPair(BaseModel):
-    key: str = Field(..., description="屬性名稱 (例如: req_id, language)")
-    value: str= Field(..., description="屬性值 (例如: REQ-001, Python)")
+    key: str = Field(..., description="屬性名稱")
+    value: str= Field(..., description="屬性值")
 
 class Entity(BaseModel):
     name: str = Field(..., description="實體的唯一名稱") # name 為必填
     label: EntityLabel
     properties: Optional[List[KeyValPair]] = Field(default_factory=list, description="實體的屬性資訊")
 
+class Relation(BaseModel):
+    name: str = Field(..., description="實體之間的邏輯關係")
+    description: str
+
 class Triple(BaseModel):
     subject: Entity
-    relation: str
+    relation: Relation
     object: Entity
 
 class TripleList(BaseModel):
@@ -105,7 +109,9 @@ class Neo4jImoprter:
                 SET oNode.source_files = apoc.coll.toSet(coalesce(oNode.source_files, []) + $source_file)
 
                 WITH sNode, oNode, row
-                CALL apoc.create.relationship(sNode, row.relation, {source_file: $source_file}, oNode) YIELD rel
+                CALL apoc.merge.relationship(sNode, row.relation.name, {}, {}, oNode) YIELD rel
+                SET rel.description = row.relation.description
+                SET rel.source_files = apoc.coll.toSet(coalesce(rel.source_files, []) + $source_file)
                 RETURN count(rel)
                 """
                 session.run(cypher_query, batch=data_to_upload, source_file=source_file)

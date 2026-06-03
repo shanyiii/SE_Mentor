@@ -65,14 +65,14 @@ async def llm_retrieved_context(question: str, chapter: str) ->  Tuple[list[str]
     print(res.output_parsed)
     return res.output_parsed.retrieved_contents, res.output_parsed.response
 
-async def get_retrieved_contexts(func, question: str, component_name: str, document_name: str) -> Tuple[list[str], str]:
+async def get_retrieved_contexts(func, question: str, component_name: str, document_name: str, chapter: str = None) -> Tuple[list[str], str]:
+    # result = func(question, chapter)
     result = func(question)
     retrieved_docs = result[component_name][document_name]
-    retrieved_contexts = [doc.content for doc in retrieved_docs]
-    # for context in retrieved_contexts:
-    #     print(context[:200])
-    response = result["llm"]["replies"][0]._content[0].text
-    # response = result["answer_llm"]["replies"][0]
+    # retrieved_contexts = [doc.content for doc in retrieved_docs]
+    retrieved_contexts = [retrieved_docs]
+    # response = result["llm"]["replies"][0]._content[0].text
+    response = result["answer_llm"]["replies"][0]
     print("="*30)
     # print(response)
     return retrieved_contexts, response
@@ -151,7 +151,7 @@ if __name__ == '__main__':
 
     result_list = list()
     for data in dataset:
-        contexts, response = asyncio.run(get_retrieved_contexts(neo4j_retriever, question=data["question"], component_name="retriever", document_name="documents"))
+        contexts, response = asyncio.run(get_retrieved_contexts(neo4j_textbook_kg_retriever, question=data["question"], component_name="desc_reasoner", document_name="knowledge_base"))
         # contexts, response = asyncio.run(llm_retrieved_context(data["question"], data["chapter"]))
 
         context_precision_score = asyncio.run(context_precision(data["question"], data["reference"], contexts))
@@ -170,7 +170,7 @@ if __name__ == '__main__':
                 "average_score": round(average_score, 2) 
         })
 
-    with open("md_files\\JSON\\evaluation\\rag_evaluation_llm_tags_rr.json", 'w', encoding="utf-8") as f:
+    with open("md_files\\JSON\\evaluation\\rag_evaluation_kg_disc.json", 'w', encoding="utf-8") as f:
         json.dump(result_list, f, indent=2, ensure_ascii=False)
 
     # asyncio.run(llm_retrieved_context(dataset[0]["question"], dataset[0]["chapter"]))
