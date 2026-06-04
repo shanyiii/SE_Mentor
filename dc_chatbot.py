@@ -9,7 +9,7 @@ from opencc import OpenCC
 
 from quiz_generater_llm import generate_quiz_llm
 from quiz_generater_kg import generate_quiz_kg
-from haystack_controller import neo4j_generate_notes, neo4j_retriever, neo4j_doc_retriever
+from haystack_controller import neo4j_generate_notes, neo4j_retriever, neo4j_doc_retriever, neo4j_textbook_kg_retriever
 from mongo_controller import DiagnosisQuiz, init_mongo
 from config import DISCORD_TOKEN
 from prompts import DCCHATBOT_WELCOME_MESSAGE
@@ -188,11 +188,13 @@ async def document_question(interaction: discord.Interaction, question: str):
 
 @bot.tree.command(name="course_qa", description="課程問答")
 @app_commands.describe(question="請輸入你的問題")
-async def course_qa(interaction: discord.Interaction, chapter: str, question: str):
+async def course_qa(interaction: discord.Interaction, question: str):
     await interaction.response.defer(ephemeral=True)
     try:
-        response = await run_blocking(neo4j_retriever, question, chapter)
-        content = f"> {question}\n\n{cc.convert(response['llm']['replies'][0]._content[0].text)}"
+        # response = await run_blocking(neo4j_retriever, question, chapter)
+        # content = f"> {question}\n\n{cc.convert(response['llm']['replies'][0]._content[0].text)}"
+        response = await run_blocking(neo4j_textbook_kg_retriever, question)
+        content = f"> {question}\n\n{cc.convert(response['answer_llm']['replies'][0])}"
         await interaction.followup.send(content=content)
     
     except Exception as e:
