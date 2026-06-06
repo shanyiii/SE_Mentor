@@ -129,28 +129,46 @@ class DescriptionBasedReasoning:
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
 
     @component.output_types(knowledge_base=str)
-    def run(self, keywords: str):  
+    def run(self, keywords: str, group_id: str = None):  
         kw_list = keywords.split("、")
         print(f"[keywords]: {kw_list}")  
 
-        cypher = """
-        WITH $keywords AS keywords
-        UNWIND keywords AS keyword
-        MATCH (entity)
-        WHERE apoc.text.fuzzyMatch(entity.name, keyword)
-        OPTIONAL MATCH (entity)-[rel]-(neighbor)
-        RETURN 
-            entity.name AS entityName,
-            entity.description AS entityDesc,
-            type(rel) AS relationType,
-            rel.description AS relationDesc,
-            neighbor.name AS neighborName,
-            neighbor.description AS neighborDesc
-        LIMIT 20;
-        """
         with self.driver.session() as session:
             try:
-                result = session.run(cypher, keywords=kw_list)
+                if group_id:
+                    cypher = """
+                    WITH $keywords AS keywords
+                    UNWIND keywords AS keyword
+                    MATCH (entity)
+                    WHERE apoc.text.fuzzyMatch(entity.name, keyword) and entity.group = $group
+                    OPTIONAL MATCH (entity)-[rel]-(neighbor)
+                    RETURN 
+                        entity.name AS entityName,
+                        entity.description AS entityDesc,
+                        type(rel) AS relationType,
+                        rel.description AS relationDesc,
+                        neighbor.name AS neighborName,
+                        neighbor.description AS neighborDesc
+                    LIMIT 20;
+                    """
+                    result = session.run(cypher, keywords=kw_list, group=group_id)
+                else:
+                    cypher = """
+                    WITH $keywords AS keywords
+                    UNWIND keywords AS keyword
+                    MATCH (entity)
+                    WHERE apoc.text.fuzzyMatch(entity.name, keyword)
+                    OPTIONAL MATCH (entity)-[rel]-(neighbor)
+                    RETURN 
+                        entity.name AS entityName,
+                        entity.description AS entityDesc,
+                        type(rel) AS relationType,
+                        rel.description AS relationDesc,
+                        neighbor.name AS neighborName,
+                        neighbor.description AS neighborDesc
+                    LIMIT 20;
+                    """
+                    result = session.run(cypher, keywords=kw_list)
                 knowledge_text = self._format_knowledge(result)
                 # records = [str(record.data()) for record in result]
                 if not knowledge_text:
@@ -386,13 +404,13 @@ def _build_kg_pipeline(kw_prompt_builder: PromptBuilder) -> Pipeline:
 
     # 關鍵字 + 圖譜中的 description
     pipeline.add_component("kw_prompt", kw_prompt_builder)
-    pipeline.add_component("cypher_llm", AnthropicGenerator(api_key=Secret.from_token(CLAUDE_API_KEY), model="claude-haiku-4-5"))
+    pipeline.add_component("kw_llm", AnthropicGenerator(api_key=Secret.from_token(CLAUDE_API_KEY), model="claude-haiku-4-5"))
     pipeline.add_component("desc_reasoner",  DescriptionBasedReasoning("bolt://localhost:7687", "neo4j", NEO4J_PASSWORD))
     pipeline.add_component("answer_prompt", PromptBuilder(template=answer_prompt_template))
     pipeline.add_component("answer_llm", OpenAIGenerator(api_key=Secret.from_env_var("OPENAI_API_KEY"), model="gpt-4o-mini"))
 
-    pipeline.connect("kw_prompt.prompt", "cypher_llm.prompt")
-    pipeline.connect("cypher_llm.replies", "desc_reasoner.keywords")
+    pipeline.connect("kw_prompt.prompt", "kw_llm.prompt")
+    pipeline.connect("kw_llm.replies", "desc_reasoner.keywords")
     pipeline.connect("desc_reasoner.knowledge_base", "answer_prompt.documents")
     pipeline.connect("answer_prompt.prompt", "answer_llm.prompt")
 
@@ -525,8 +543,8 @@ def neo4j_textbook_kg_retriever(question: str) -> dict[str, Any]:
 
     【Schema 資訊】
     - Labels: Concept, Technology, Methodology
-    - Properties: name, group, source_files, description
-    - Relationships: 是, 部分, 實作, 使用, 操作, 依賴, 改善, 解決
+    - Properties: name, source_files, description
+    - Relationships: 是, 包含於, 實作, 使用, 操作, 依賴, 改善, 解決
 
     使用者的問題: {{question}}
     生成的關鍵字:
@@ -549,36 +567,47 @@ def neo4j_textbook_kg_retriever(question: str) -> dict[str, Any]:
 
 def neo4j_doc_retriever(question: str, group_id: str) -> str:
     # 將問題轉為 Cypher 的 Prompt
-    cypher_prompt_template = """
-    你是一位 Neo4j 專家。請根據以下 Schema 將使用者的問題轉化為精確的 Cypher 查詢語句，並以 string 形式輸出。
+    # cypher_prompt_template = """
+    # 你是一位 Neo4j 專家。請根據以下 Schema 將使用者的問題轉化為精確的 Cypher 查詢語句，並以 string 形式輸出。
+
+    # 【Schema 資訊】
+    # - Labels: Requirement, SystemComponent, API, TestCase, Actor, General
+    # - Properties: name, group, source_files, description, (以及其他從文件提取的屬性)
+    # - Relationships: 是, 部分, 實作, 使用, 操作, 依賴, 改善, 解決
+
+    # 【限制條件】
+    # - 必須包含 `group == '{{group}}'` 的過濾條件。
+    # - 只輸出 Cypher 語句，不要任何解釋或 markdown 標籤。
+    # - 盡量使用關鍵字模糊匹配 (CONTAINS) 以提高檢索成功率。
+
+    # 使用者的問題: {{question}}
+    # 生成的 Cypher:
+    # """
+
+    keyword_prompt_template = """
+    請根據以下 Neo4j Schema 替使用者的問題生成 2 至 3 個關鍵字，用來檢索知識圖譜中的實體。請僅輸出關鍵字，且關鍵字之間請用頓號(、)隔開。
 
     【Schema 資訊】
-    - Labels: Requirement, SystemComponent, API, TestCase, Actor, General
-    - Properties: name, group, source_files, description, (以及其他從文件提取的屬性)
-    - Relationships: 是, 部分, 實作, 使用, 操作, 依賴, 改善, 解決
-
-    【限制條件】
-    - 必須包含 `group == '{{group}}'` 的過濾條件。
-    - 只輸出 Cypher 語句，不要任何解釋或 markdown 標籤。
-    - 盡量使用關鍵字模糊匹配 (CONTAINS) 以提高檢索成功率。
+    - Labels: Concept, Requirement, Actor, Methodology, SystemComponent, TestCase
+    - Properties: name, group, source_files, description, req_id, req_category
+    - Relationships: 是, 包含於, 實作, 使用, 操作, 依賴, 改善, 解決
 
     使用者的問題: {{question}}
-    生成的 Cypher:
+    生成的關鍵字:
     """
 
-    pipeline = _build_kg_pipeline(PromptBuilder(template=cypher_prompt_template))
+    pipeline = _build_kg_pipeline(PromptBuilder(template=keyword_prompt_template))
 
     result = pipeline.run(
         data={
-            "cypher_prompt": {"question": question, "group": group_id},
+            "kw_prompt": {"question": question},
             "answer_prompt": {"question": question},
-            "neo4j_executor": {}
+            "desc_reasoner": {"group_id": group_id}
         },
-        include_outputs_from=["cypher_llm", "neo4j_executor", "answer_llm"]
+        include_outputs_from=["desc_reasoner", "answer_llm"]
     )
-    print(f"【cypher from llm】:\n{result['cypher_llm']['replies']}")
-    # return result
-    return result["answer_llm"]["replies"][0]
+    return result
+    # return result["answer_llm"]["replies"][0]
 
 async def main():
     # res = await neo4j_retriever("請問有哪些git指令可以做分支合併？")
@@ -673,7 +702,7 @@ if __name__ == '__main__':
 
     # asyncio.run(filter_retrieval_test())
 
-    question = "請問有哪git些指令可以合併分支？"
+    question = "請問管理員可以操作哪些功能？"
     # res = neo4j_retriever(question)
     # for d in  res["retriever"]["documents"]:
     #     print(d.content)
@@ -681,10 +710,11 @@ if __name__ == '__main__':
     # print(res["llm"]["replies"][0]._content[0].text)
     # print(res["llm"]["replies"][0])
 
-    res = neo4j_textbook_kg_retriever(question)
-    print(res["answer_llm"]["replies"][0])
-    print("="*30)
+    # res = neo4j_textbook_kg_retriever(question)
+    res = neo4j_doc_retriever(question, "第七組")
     print(res["desc_reasoner"]["knowledge_base"])
+    print("="*30)
+    print(res["answer_llm"]["replies"][0])
 
     # upload_to_vector_db(["C:\\Users\\shanyiii\\Desktop\\mine\\1141軟體工程\\[06]版本控制.pdf"])
 

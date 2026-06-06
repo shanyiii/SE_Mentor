@@ -7,7 +7,7 @@ from file_processor import clean_markdown, md_splitter
 from neo4j_impoter import Neo4jImoprter, TripleList
 from common import NEO4J_URI
 from config import NEO4J_PASSWORD, GEMINI_API_KEY, CLAUDE_API_KEY
-from prompts import ENTITY_PROMPT_4_TEXTBOOK, TRIPLE_PROMPT_4_TEXTBOOK
+from prompts import ENTITY_PROMPT_4_TEXTBOOK, TRIPLE_PROMPT_4_TEXTBOOK, ENTITY_PROMPT_4_SRD, TRIPLE_PROMPT_4_SRD
 from google import genai
 from google.genai import types
 from google.genai.errors import ClientError
@@ -121,7 +121,7 @@ def relations_extraction(prompt, entities_list, user_input):
 if __name__ == '__main__':
     chapter_num = 11
     try:
-        with open(f"md_files\\textbooks\\ch{chapter_num}_markdown.md", 'r', encoding='utf-8') as input_file:
+        with open(f"md_files\\document\\海大餐飲外送系統-需求文件(SRD).md", 'r', encoding='utf-8') as input_file:
             md_content = input_file.read()
     except FileNotFoundError:
         print("Error: The specified file was not found.")
@@ -134,7 +134,7 @@ if __name__ == '__main__':
     page_entities_list = list()
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        future_to_doc = {executor.submit(entities_extraction, doc.page_content, ENTITY_PROMPT_4_TEXTBOOK): doc for doc in md_documents}
+        future_to_doc = {executor.submit(entities_extraction, doc.page_content, ENTITY_PROMPT_4_SRD): doc for doc in md_documents}
         
         for future in as_completed(future_to_doc):
             doc = future_to_doc[future]
@@ -147,7 +147,7 @@ if __name__ == '__main__':
             except Exception as e:
                 print(f"實體抽取 Exception: {e}")
 
-    with open(f"md_files\\JSON\\kgs\\textbook_entities_ch{chapter_num}.json", 'w', encoding="utf-8") as f:
+    with open(f"md_files\\JSON\\kgs\\doc\\doc_entities_g7_srd.json", 'w', encoding="utf-8") as f:
         json.dump(page_entities_list, f, indent=2, ensure_ascii=False)
 
     list_of_TripleList = list()
@@ -155,7 +155,7 @@ if __name__ == '__main__':
     
     with ThreadPoolExecutor(max_workers=2) as executor:
         future_to_relation = {
-            executor.submit(relations_extraction, TRIPLE_PROMPT_4_TEXTBOOK, entities, doc): doc 
+            executor.submit(relations_extraction, TRIPLE_PROMPT_4_SRD, entities, doc): doc 
             for doc, entities in doc_entity_pairs if entities
         }
         
@@ -168,7 +168,7 @@ if __name__ == '__main__':
                 print(f"關係抽取 Exception: {e}")
 
     data_to_save = [t.model_dump(mode="json") for triples in list_of_TripleList for t in triples.triples]
-    with open(f"md_files\\JSON\\kgs\\textbook_triples_ch{chapter_num}.json", 'w', encoding="utf-8") as f:
+    with open(f"md_files\\JSON\\kgs\\doc\\doc_triples_g7_srd.json", 'w', encoding="utf-8") as f:
         json.dump(data_to_save, f, indent=2, ensure_ascii=False)
     
     print("關係抽取完成")
@@ -184,13 +184,13 @@ if __name__ == '__main__':
     
     # ======上傳KG======
 
-    source_file = "[11]DevOps自動化建置管理.pdf"
+    source_file = "海大餐飲外送系統-需求文件(SRD).md"
     
     importer = Neo4jImoprter(uri=NEO4J_URI, username="neo4j", password=NEO4J_PASSWORD)
     try:
         if importer.connect():
-            # is_success = importer.upload_doc_triples(triple_list, source_file, "第七組")
-            is_success = importer.upload_textbook_triples(triple_list, source_file)
+            is_success = importer.upload_doc_triples(triple_list, source_file, "SDD", "第七組")
+            # is_success = importer.upload_textbook_triples(triple_list, source_file)
             print(f"上傳結果：{is_success}")
     finally:
         importer.close()

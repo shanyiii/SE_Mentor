@@ -67,7 +67,7 @@ TRIPLE_PROMPT_4_TEXTBOOK = """
 	你是一位知識工程師，專精於從軟體工程文本中建構語義網絡。
 
 	# Task
-	根據提供的「實體列表」，從「文章內容」中找出這些實體之間的邏輯關係，並以三元組 (Subject, Relation, Object) 的形式輸出。請務必根據文章內容替每個實體與關係加上描述，並分別記錄於實體(Entity)的屬性中(properties)，key 為 'description'，以及關係(Relation)的description中。
+	根據提供的「實體列表」，從「文章內容」中找出這些實體之間的邏輯關係，並以三元組 (Subject, Relation, Object) 的形式輸出。請務必根據文章內容替每個實體與關係加上描述，並分別記錄於實體(Entity)的屬性中(properties)，key 為 'description'，以及關係(Relation)的description中。description 應為單句摘要，不超過 30 個中文字。
 
 	# Relation Schema (請優先使用以下關係語義)
 	- 是：分類關係 (如: Git - 是 -> 版本控制工具)
@@ -81,7 +81,7 @@ TRIPLE_PROMPT_4_TEXTBOOK = """
 	2. 方向性：確保 Subject 是主體，Object 是受體。例如：(索引 - 改善 -> 查詢效率)，語意順序不可顛倒。
 	3. 精煉關係：關係詞應為動詞或動詞短語，且盡量使用上述 Relation Schema 中的詞彙。
 	4. 顯著性：只提取文章中明確支持的關係，避免主觀臆測。
-	5. 連通性：若一個實體存在多個關係，請全部列出，以建立豐富的知識網路。
+	5. 連通性：若存在多個由文件明確支持的關係，請全部列出。不得僅為提高圖譜密度而建立關係。
     
     # Example
     - Input: 系統測試測試系統軟體與硬體整體功能是否協調，確認開發人員依照系統需求文件正確無誤開發系統。驗證系統需求文件所描述功能都正確無誤實作，測試環境應與實際環境相似，以驗證系統內部功能。以黑箱測試技術為主。
@@ -123,33 +123,34 @@ ENTITY_PROMPT_4_SRD = """
 
 	# Section Filtering
 	明確忽略以下區段：
+    - 版次、目錄
 	- System Description
 	- 專案介紹 / 特色描述
 	- 實作方案 / 使用技術
 
 	# Entity Categories (優先提取以下類別)
-	- 功能需求與非功能需求 (如: 瀏覽歷史紀錄, 帳號註冊)
-	- 執行功能的角色 (如: 顧客、店家)
-	禁止提取「系統」、「功能描述」、「平台特色」類實體。
+	- Requirement: 功能需求與非功能需求 (如: 瀏覽歷史紀錄, 帳號註冊)
+	- Actor: 執行功能的角色 (如: 顧客、店家)
+	禁止提取「系統模組」、「平台特色」類實體。
 	語句如「系統應...」僅表示需求描述， 不代表存在一個系統模組。
 	
 	# Table Parsing Rules
 	若文件包含 Markdown 表格：
 	1. 必須逐「列」處理，每一列視為一個獨立需求
-	3. 不可合併多列內容
-	4. 不可省略任何一列（即使語意相似）
-	5. 子編號（如 FR-CUS-RES-01.1）視為獨立需求
+	2. 不可合併多列內容
+	3. 不可省略任何一列（即使語意相似）
+	4. 子編號（如 FR-CUS-RES-01.1）視為獨立需求
 
 	# Rules
-	1. 去噪點：嚴禁提取「系統」、「文章」、「功能」、「用戶」、「免費」、「簡單」等過於一般化或描述性的詞彙。
-	2. 標準化 (Normalization)：將同義詞映射至教材標準術語。例如：「版控」、「SVN/Git」統稱為「版本控制」；「寫 Code」統一為「程式編碼」。
+	1. 去噪點：嚴禁提取「系統」、「文章」、「功能」、「用戶」、「免費」、「工期」、「效能」等過於一般化或描述性的詞彙。
+	2. 標準化 (Normalization)：將同義詞映射至標準術語。例如：「版控」、「版本控制」統稱為「版本控制」；「寫 Code」統一為「程式編碼」。
 	3. 具體性：實體必須是一個獨立的知識點。如果一個實體在脫離本文後無法定義為一個專業術語，請忽略它。
 	4. 關係導向：只保留「可以被定義、被解釋、或與其他實體產生邏輯連接」的實體。
 	5. 唯一性：確保輸出的 Python list 中沒有重複項。
-  6. 粒度控制：優先提取「功能單位」而非操作步驟。例如：「購物車管理」優於「修改購物車資訊」。
+  	6. 粒度控制：優先提取「功能單位」而非操作步驟。例如：「購物車管理」優於「修改購物車資訊」。
 
 	# Example
-	- Input: "顧客可於購物車中修改數量、刪除特定餐廳的所有餐點。"
+	- Input: '顧客可於購物車中修改數量、刪除特定餐廳的所有餐點。'
 	- Output: ['顧客', '購物車管理', '需求功能']
 
 	# Output Format
@@ -161,7 +162,7 @@ TRIPLE_PROMPT_4_SRD = """
 	你是一位知識工程師，專精於從軟體工程文本中建構語義網絡。
 
 	# Task
-	根據提供的「實體列表」，從「需求文件內容」中找出這些實體的標籤及屬性，以及實體之間的邏輯關係，並以三元組 (Subject, Relation, Object) 的形式輸出。
+	根據提供的「實體列表」，從「需求文件內容」中找出這些實體的標籤及屬性，以及實體之間的邏輯關係，並以三元組 (Subject, Relation, Object) 的形式輸出。請務必根據文件內容替每個實體與關係加上描述，並分別記錄於實體(Entity)的屬性中(properties)，key 為 'description'，以及關係(Relation)的description中。
 
 	# Entity Schema
 	每個實體的資訊，包含標籤 (label) 及屬性 (properties)。對於 properties，請務必使用 [{'key': '...', 'value': '...'}] 的列表格式，請勿使用字典 (dictionary) 格式。
@@ -170,24 +171,24 @@ TRIPLE_PROMPT_4_SRD = """
 		- Actor: 操作系統 (功能) 的角色
 	- properties: 
 		- name: 實體的唯一名稱
-		- req_id: 需求的編號
+		- req_id: 功能需求和非功能需求的編號
 		- description: 實體的描述
-		- req_category:需求類別，僅分為功能需求或非功能需求
+		- req_category: 需求類別，僅分為「功能需求」或「非功能需求」
 
 	# Core Traceability Relations (最高優先)
 	- 對應需求
 		(SystemComponent -> Requirement)
 		(TestCase -> Requirement)
 	- 操作
-		(Actor → Requirement)
+		(Actor -> Requirement)
 
 	功能需求皆依照此規則來表示：「操作系統的角色 (Actor)」使用「功能需求 (Requirement)」。
 	例如：「顧客」可將「餐點加入購物車」
-	請根據此規則來提取「操作」關聯，且一定是 Actor -> 操作 -> Requirement，方向不可逆。
+	請根據此規則來提取「操作」關聯，且一定是 Actor - 操作 -> Requirement，方向不可逆。
 	
 	# Relation Schema (次要關聯)
 	- 是：分類關係 (如: Git - 是 -> 版本控制工具)
-	- 部分：組成關係 (如: 記憶體管理 - 部分 -> 作業系統)
+	- 包含於：組成關係，「子」包含於「父」中 (如: 記憶體管理 - 包含於 -> 作業系統)
 
 	關係優先順序：
 	1. traceability relations
@@ -200,63 +201,184 @@ TRIPLE_PROMPT_4_SRD = """
 
 	# Requirement Relation Constraints
 	- 需求之間「預設不得建立關係」，除非有明確層級關係（parent-child）
-			例如：FR-CUS-RES-01 → FR-CUS-RES-01.1
-			否則不可建立 Requirement → Requirement 關係
-	- 只有當兩個實體來自「不同文件類型」時，才允許建立 traceability 關係（如 Requirement ↔ TestCase）。
+			例如：FR-CUS-RES-01 -> FR-CUS-RES-01.1
+			否則不可建立 Requirement -> Requirement 關係
+	- 只有當兩個實體來自「不同文件類型」時，才允許建立 traceability 關係（如 TestCase -> Requirement）。
 
 	# Rules
 	1. 嚴格限制：僅限於提取「實體列表」中出現的術語之間的關係。
-	2. 方向性：確保 Subject 是主體，Object 是受體。例如：(Docker, implements, 容器化)，不可寫反。
+	2. 方向性：確保 Subject 是主體，Object 是受體。例如：(索引 - 改善 -> 查詢效率)，語意/邏輯順序不可顛倒。
 	3. 精煉關係：關係詞應為動詞或動詞短語，且盡量使用上述 Schema 中的詞彙。
 	4. 顯著性：只提取文章中明確支持的關係，避免主觀臆測。
-	5. 連通性：若一個實體存在多個關係，請全部列出，以建立豐富的知識網路。
-	6. 可追蹤性：若文本中出現任何 ID 或編號（如 req_id, module_id, case_id），必須保留並與實體綁定。
+	5. 連通性：若存在多個由文件明確支持的關係，請全部列出。不得僅為提高圖譜密度而建立關係。
+	6. 可追蹤性：若文本中出現任何 ID 或編號（如 req_id, module_id, case_id），必須保留並與實體綁定，不可擅自解讀編號或自行生成編號。
 	7. 屬性提取限制：僅能使用文本中明確出現的資訊，不可推測或補齊缺失欄位。
 	8. 一致性：三元組中的實體名稱必須與「實體列表」完全一致。
 	9. 禁止僅因語意相關（如都屬於顧客或訂單）就建立關係
-	10. 禁止 Feature / 系統描述 → Requirement 的連結
+	10. 禁止 Feature / 系統描述 -> Requirement 的連結
+    
+    # Example
+    - Input: [FR-ADM-MEM-03] 管理員可停用會員帳號。身為管理員，我希望能刪除或停用不當行為會員，以維護營運安全與規範。停用後無法登入/下單。
+    - Output:
+		[{
+		'subject': {
+			'name': '管理員',
+			'label': 'Actor',
+			'properties': [
+				{
+					'key': 'description',
+					'value': '負責管理餐廳、餐點、訂單及會員資料的系統管理角色'
+				}
+			]
+		},
+		'relation': {
+			'name': '操作',
+            'description': '管理員停用不當行為會員，以維護營運安全與規範'
+        },
+		'object': {
+			'name': '會員停用',
+			'label': 'Requirement',
+			'properties': 
+				{
+					'key': 'description',
+					'value': '管理員能刪除或停用不當行為會員，停用前有風險告知與稽核記錄，且被停用的會員無法登入和下單。'
+				}, 
+				{
+					'key': 'req_id',
+					'value': 'FR-ADM-MEM-03'
+				}, 
+				{
+					'key': 'req_category',
+					'value': '功能需求'
+				}
+			]
+		}]
 """
 
-# 待修改
 ENTITY_PROMPT_4_SDD = """
   	# Role
 	你是一位資深的「軟體工程」專家，擅長將非結構化文本轉化為結構化的知識圖譜實體。
 
 	# Task
 	請從提供的設計文件中提取名詞實體。這些實體必須具備與其他概念建立關聯的潛力，並能夠跟其他文件 (需求文件、測試文件) 連結。
-  	需求文件需提取每個功能需求與非功能需求，包含操作功能的角色。
+  	設計文件需提取介面設計、實作方案及設計議題。
 
 	# Section Filtering
 	明確忽略以下區段：
-	- System Description
-	- 專案介紹 / 特色描述
-	- 實作方案 / 使用技術
+	- 版次、目錄
+	- 任何圖 (架構圖、流程圖)
+	- 使用者畫面設計
 
 	# Entity Categories (優先提取以下類別)
-	- 功能需求與非功能需求 (如: 瀏覽歷史紀錄, 帳號註冊)
-	- 執行功能的角色 (如: 顧客、店家)
-	禁止提取「系統」、「功能描述」、「平台特色」類實體。
-	語句如「系統應...」僅表示需求描述， 不代表存在一個系統模組。
+    - SystemComponent: 系統中具有明確職責且可獨立實作的軟體元件，禁止將資料庫、框架或程式語言視為 SystemComponent (如: CartService, OrderController)
+	- Technology: 具體技術產品或框架 (如: Nuxt, MongoDB)
+    - API: 介面設計，以 endpoint 為單位提取，並保留 path、method (如: GET /api/admin/restaurants, POST /api/orders/id/chats)
+	禁止提取「功能描述」、「平台特色」類實體。
+    若同時存在「功能描述」、「實際元件名稱」，請優先提取實際元件名稱。例如：「購物車管理模組 CartService」應提取 'CartService' 而非「購物車管理」。
 	
 	# Table Parsing Rules
 	若文件包含 Markdown 表格：
-	1. 必須逐「列」處理，每一列視為一個獨立需求
+	1. 必須逐「列」處理，每一列視為一個獨立項目
 	3. 不可合併多列內容
 	4. 不可省略任何一列（即使語意相似）
-	5. 子編號（如 FR-CUS-RES-01.1）視為獨立需求
 
 	# Rules
-	1. 去噪點：嚴禁提取「系統」、「文章」、「功能」、「用戶」、「免費」、「簡單」等過於一般化或描述性的詞彙。
-	2. 標準化 (Normalization)：將同義詞映射至教材標準術語。例如：「版控」、「SVN/Git」統稱為「版本控制」；「寫 Code」統一為「程式編碼」。
+	1. 去噪點：嚴禁提取「系統」、「文章」、「功能」、「用戶」、「免費」、「工期」、「效能」等過於一般化或描述性的詞彙。
+	2. 標準化 (Normalization)：將同義詞映射至標準術語。例如：「版控」、「版本控制」統稱為「版本控制」；「寫 Code」統一為「程式編碼」。
 	3. 具體性：實體必須是一個獨立的知識點。如果一個實體在脫離本文後無法定義為一個專業術語，請忽略它。
 	4. 關係導向：只保留「可以被定義、被解釋、或與其他實體產生邏輯連接」的實體。
 	5. 唯一性：確保輸出的 Python list 中沒有重複項。
-  	6. 粒度控制：優先提取「功能單位」而非操作步驟。例如：「購物車管理」優於「修改購物車資訊」。
+  	6. 粒度控制：優先提取可獨立實作的元件或介面，不得將多個不同 API 或元件合併為單一抽象概念。
+    7. 嚴禁推論：僅提取文件中明確出現的實體，不得根據常見軟體架構、開發經驗或技術慣例新增實體。
 
 	# Example
-	- Input: "顧客可於購物車中修改數量、刪除特定餐廳的所有餐點。"
-	- Output: ['顧客', '購物車管理', '需求功能']
+	- Input: '為提升開發及維護效率，系統另配置備援節點於 Ubuntu 伺服器，並透過 Docker 容器化 Nuxt 前端與 API 服務，以便在開發或維護過程中進行測試與驗證。'
+	- Output: ['Ubuntu', 'Docker', 'Nuxt']
 
 	# Output Format
 	請直接輸出一個 Python List，不需任何額外解釋。
+"""
+
+TRIPLE_PROMPT_4_SDD = """
+  	# Role
+	你是一位知識工程師，專精於從軟體工程文本中建構語義網絡。
+
+	# Task
+	根據提供的「實體列表」，從「設計文件內容」中找出這些實體的標籤及屬性，以及實體之間的邏輯關係，並以三元組 (Subject, Relation, Object) 的形式輸出。請務必根據文件內容替每個實體與關係加上描述，並分別記錄於實體(Entity)的屬性中(properties)，key 為 'description'，以及關係(Relation)的description中。description 應為單句摘要，不超過 30 個中文字。
+
+	# Entity Schema
+	每個實體的資訊，包含標籤 (label) 及屬性 (properties)。對於 properties，請務必使用 [{'key': '...', 'value': '...'}] 的列表格式，請勿使用字典 (dictionary) 格式。
+	- label: 
+        - SystemComponent: 系統中具有明確職責且可獨立實作的軟體元件
+		- Technology: 具體技術產品或框架
+		- API: 介面 endpoint
+	- properties: 
+		- name: 實體的唯一名稱
+		- description: 實體的描述
+		- req_reference: 對應的功能需求或非功能需求
+
+	# Core Traceability Relations (最高優先)
+    - 使用：技術使用 (如: WebService - 使用 -> HTTP 協定)
+    - 呼叫：介面呼叫 (如: /api/reviews - 呼叫 -> ReviewComponent)
+	- 實作需求：系統元件實作的需求 (如: ReviewComponent - 實作需求 -> 餐廳評論管理)
+	
+	# Relation Schema (次要關聯)
+	- 包含於：組成關係，「子」包含於「父」中 (如: 記憶體管理 - 包含於 -> 作業系統)
+
+	關係優先順序：
+	1. traceability relations
+	2. 系統結構（部分、使用）
+	3. 語義關係（是、改善）
+
+	# ID-based Linking
+	若實體包含 req_id / case_id：
+	必須優先使用 ID 判斷關聯，而非語意推測
+
+	# Rules
+	1. 嚴格限制：僅限於提取「實體列表」中出現的術語之間的關係。
+	2. 方向性：確保 Subject 是主體，Object 是受體。例如：(索引 - 改善 -> 查詢效率)，語意/邏輯順序不可顛倒。
+	3. 精煉關係：關係詞應為動詞或動詞短語，且盡量使用上述 Schema 中的詞彙。
+	4. 顯著性：只提取文章中明確支持的關係，避免主觀臆測。
+	5. 連通性：若存在多個由文件明確支持的關係，請全部列出。不得僅為提高圖譜密度而建立關係。
+	6. 可追蹤性：若文本中出現任何 ID 或編號（如 req_id, module_id, case_id），必須保留並與實體綁定，不可擅自解讀編號或自行生成編號。
+	7. 屬性提取限制：僅能使用文本中明確出現的資訊，不可推測或補齊缺失欄位。
+	8. 一致性：三元組中的實體名稱必須與「實體列表」完全一致。
+	9. 禁止僅因語意相關（如都屬於顧客或訂單）就建立關係
+    
+    # Example
+    - Input: [FR-ADM-MEM-03] 管理員可停用會員帳號。身為管理員，我希望能刪除或停用不當行為會員，以維護營運安全與規範。停用後無法登入/下單。
+    - Output:
+		[{
+		'subject': {
+			'name': '管理員',
+			'label': 'Actor',
+			'properties': [
+				{
+					'key': 'description',
+					'value': '負責管理餐廳、餐點、訂單及會員資料的系統管理角色'
+				}
+			]
+		},
+		'relation': {
+			'name': '操作',
+            'description': '管理員停用不當行為會員，以維護營運安全與規範'
+        },
+		'object': {
+			'name': '會員停用',
+			'label': 'Requirement',
+			'properties': 
+				{
+					'key': 'description',
+					'value': '管理員能刪除或停用不當行為會員，停用前有風險告知與稽核記錄，且被停用的會員無法登入和下單。'
+				}, 
+				{
+					'key': 'req_id',
+					'value': 'FR-ADM-MEM-03'
+				}, 
+				{
+					'key': 'req_category',
+					'value': '功能需求'
+				}
+			]
+		}]
 """

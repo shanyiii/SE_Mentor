@@ -123,7 +123,7 @@ class Neo4jImoprter:
             logger.error(f"Fail to upload to Neo4j: {e}")
             return False
 
-    def upload_doc_triples(self, triple_list: TripleList, source_file: str, group: str) -> bool:
+    def upload_doc_triples(self, triple_list: TripleList, source_file: str, doc_type: str, group: str) -> bool:
         try:
             with self.driver.session() as session:
                 labels = ["Requirement", "SystemComponent", "API", "TestCase", "Actor", "General"]
@@ -156,18 +156,22 @@ class Neo4jImoprter:
                 WITH sNode, row
                 SET sNode += row.subject.props_dict
                 SET sNode.source_files = apoc.coll.toSet(coalesce(sNode.source_files, []) + $source_file)
+                SET sNode.doc_type = apoc.coll.toSet(coalesce(sNode.doc_type, []) + $doc_type)
 
                 WITH sNode, row
                 CALL apoc.merge.node([row.object.label], {name: row.object.name, group: $group}, {}, {}) YIELD node AS oNode
                 WITH sNode, oNode, row
                 SET oNode += row.object.props_dict
                 SET oNode.source_files = apoc.coll.toSet(coalesce(oNode.source_files, []) + $source_file)
+                SET oNode.doc_type = apoc.coll.toSet(coalesce(oNode.doc_type, []) + $doc_type)
 
                 WITH sNode, oNode, row
-                CALL apoc.create.relationship(sNode, row.relation, {source_file: $source_file}, oNode) YIELD rel
+                CALL apoc.merge.relationship(sNode, row.relation.name, {}, {}, oNode) YIELD rel
+                SET rel.description = row.relation.description
+                SET rel.source_files = apoc.coll.toSet(coalesce(rel.source_files, []) + $source_file)
                 RETURN count(rel)
                 """
-                result = session.execute_write(lambda tx: tx.run(cypher_query, batch=data_to_upload, source_file=source_file, group=group).single())
+                session.execute_write(lambda tx: tx.run(cypher_query, batch=data_to_upload, source_file=source_file, group=group, doc_type=doc_type).single())
 
                 # print(f"成功上傳 {len(triple_list.triples)} 條關係。")
                 return True
