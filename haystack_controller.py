@@ -128,7 +128,7 @@ class DescriptionBasedReasoning:
     def __init__(self, uri, user, password):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
 
-    @component.output_types(knowledge_base=list[Document])
+    @component.output_types(knowledge_base=str)
     def run(self, keywords: str, group_id: str = None):  
         kw_list = keywords.split("、")
         print(f"[keywords]: {kw_list}")  
@@ -176,9 +176,6 @@ class DescriptionBasedReasoning:
                 if not knowledge_text_list:
                     return {"knowledge_base": "查無資料"}
                 
-                print(f"原始檢索知識清單:")
-                for i, k in enumerate(knowledge_text_list, 1):
-                    print(f"     {i}: {k.content}")
                 return {"knowledge_base": knowledge_text_list}
             
             except Exception as e:
@@ -227,15 +224,11 @@ class DescriptionBasedReasoning:
                     if rel['targetDesc']:
                         knowledge_text.append(f"    {rel['target']} 是 {rel['targetDesc']}")
             
-            knowledge_text_list.append(
-                Document(
-                    content="\n".join(knowledge_text)
-                )
-            )
+        knowledge_text.append("")
         
         # print(len(knowledge_text))
         # print(knowledge_text[16:18])
-        return knowledge_text_list
+        return "\n".join(knowledge_text)
 
 @component
 class VectorSearchFilter:
@@ -399,10 +392,7 @@ def _build_kg_pipeline(kw_prompt_builder: PromptBuilder) -> Pipeline:
     你是一位專業的軟體工程教學助教。請根據以下檢索到的教學資料，用台灣繁體中文回答學生的問題。
 
     【教學資料】
-    {% for doc in documents %}
-    ---
-    {{ doc.content }}
-    {% endfor %}
+    {{ documents }}
 
     【學生問題】
     {{question}}
@@ -417,15 +407,13 @@ def _build_kg_pipeline(kw_prompt_builder: PromptBuilder) -> Pipeline:
     # 關鍵字 + 圖譜中的 description
     pipeline.add_component("kw_prompt", kw_prompt_builder)
     pipeline.add_component("kw_llm", AnthropicGenerator(api_key=Secret.from_token(CLAUDE_API_KEY), model="claude-haiku-4-5"))
-    pipeline.add_component("ranker", SentenceTransformersSimilarityRanker(top_k=3))
     pipeline.add_component("desc_reasoner",  DescriptionBasedReasoning("bolt://localhost:7687", "neo4j", NEO4J_PASSWORD))
     pipeline.add_component("answer_prompt", PromptBuilder(template=answer_prompt_template, required_variables=["question"]))
     pipeline.add_component("answer_llm", OpenAIGenerator(api_key=Secret.from_env_var("OPENAI_API_KEY"), model="gpt-4o-mini"))
 
     pipeline.connect("kw_prompt.prompt", "kw_llm.prompt")
     pipeline.connect("kw_llm.replies", "desc_reasoner.keywords")
-    pipeline.connect("desc_reasoner.knowledge_base", "ranker.documents")
-    pipeline.connect("ranker.documents", "answer_prompt.documents")
+    pipeline.connect("desc_reasoner.knowledge_base", "answer_prompt.documents")
     pipeline.connect("answer_prompt.prompt", "answer_llm.prompt")
 
     # 舊的 KG 檢索 (純關鍵字)
@@ -570,7 +558,6 @@ def neo4j_textbook_kg_retriever(question: str) -> dict[str, Any]:
         data={
             "kw_prompt": {"question": question},
             "answer_prompt": {"question": question},
-            "ranker": {"query": question}
             # "neo4j_executor": {},
             # "vector_filter": {"question": question}
         },
@@ -618,7 +605,6 @@ def neo4j_doc_retriever(question: str, group_id: str = None) -> str:
             "kw_prompt": {"question": question},
             "answer_prompt": {"question": question},
             "desc_reasoner": {"group_id": group_id}, 
-            "ranker": {"query": question}
         },
         include_outputs_from=["desc_reasoner", "answer_llm"]
     )
@@ -718,7 +704,7 @@ if __name__ == '__main__':
 
     # asyncio.run(filter_retrieval_test())
 
-    question = "請問白箱測試跟黑箱測試的差異是什麼?"
+    question = "請問管理員可以操作哪些功能?"
     # res = neo4j_retriever(question)
     # for d in  res["retriever"]["documents"]:
     #     print(d.content)
@@ -727,10 +713,8 @@ if __name__ == '__main__':
     # print(res["llm"]["replies"][0])
 
     # res = neo4j_textbook_kg_retriever(question)
-    res = neo4j_textbook_kg_retriever(question)
-    print("排序過的知識清單：")
-    for i, k in enumerate(res["desc_reasoner"]["knowledge_base"], 1):
-        print(f"     {i}: {k.content}")
+    res = neo4j_doc_retriever(question, "第七組")
+    # print(res["desc_reasoner"]["knowledge_base"])
     print("="*30)
     print(res["answer_llm"]["replies"][0])
 

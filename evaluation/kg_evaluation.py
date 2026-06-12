@@ -258,7 +258,6 @@ class KGEvaluator:
         # print(f"\n結果已保存到 {output_file}")
     
     def print_results(self, ground_truth_results: Dict[str, Any], metrics: Dict[str, float]):
-        """打印評估結果"""
         print("\n" + "="*60)
         print("知識圖譜評估結果")
         print("="*60)
@@ -292,18 +291,6 @@ class KGEvaluator:
 
 
 def main():
-    # 使用示例
-    # if len(sys.argv) < 2:
-    #     print("使用方式：")
-    #     print("  python kg_evaluation.py <json_file> [sample_size] [output_file]")
-    #     print("\n示例：")
-    #     print("  python kg_evaluation.py knowledge_graph.json 50 results.json")
-    #     sys.exit(1)
-    
-    # json_file = sys.argv[1]
-    # sample_size = int(sys.argv[2]) if len(sys.argv) > 2 else 50
-    # output_file = sys.argv[3] if len(sys.argv) > 3 else "kg_evaluation_results.json"
-
     chapter_num = 11
     sample_size = 10
     current_dir = Path(__file__).parent
@@ -316,25 +303,20 @@ def main():
         print(f"錯誤：找不到檔案 {json_file}")
         sys.exit(1)
     
-    # 初始化評估器
     evaluator = KGEvaluator(api_key=config.CLAUDE_API_KEY)
     
-    # 1. 隨機採樣三元組
+    # 隨機採樣三元組
     print(f"從 {json_file} 中隨機採樣 {sample_size} 個三元組...")
     sampled_triples = evaluator.sample_triples(json_file, sample_size=sample_size, seed=45)
     print(f"成功採樣 {len(sampled_triples)} 個三元組\n")
     
-    # 2. 生成 ground truth
+    # 生成 ground truth
     ground_truth_results = evaluator.generate_ground_truth(sampled_triples)
     
-    # 3. 計算指標（假設所有採樣的三元組都是系統提取的）
-    # 在實際應用中，你需要比較系統提取的三元組和 ground truth
+    # 計算指標
     metrics = evaluator.calculate_metrics(sampled_triples, ground_truth_results)
     
-    # 4. 打印結果
     evaluator.print_results(ground_truth_results, metrics)
-    
-    # 5. 保存結果
     evaluator.save_results(ground_truth_results, metrics, output_file)
 
 
