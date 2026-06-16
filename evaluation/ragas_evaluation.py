@@ -43,8 +43,8 @@ async def llm_retrieved_context(question: str, chapter: str) ->  Tuple[list[str]
     )
     prompt = f"""
     你是一個「軟體工程課程助教」請從提供的檔案裡尋找可以回答問題的資訊，並根據這些資訊回答問題，請用台灣繁體中文回答問題。
-    請輸出你的回答，以及你檢索的資訊內容，可以檢索至多三個內容，檢索內容的總字數請限制在900字以內。
-    請勿直接摘要資訊內容，而是針對問題僅採用必要資訊來回答，並控制在5到7句話，總字數不超過500字。
+    請輸出你的回答，以及你檢索的資訊內容，可以檢索至多三個內容，檢索內容的總字數請限制在700字以內。
+    請勿直接摘要資訊內容，而是針對問題僅採用必要資訊來回答，並控制在5到7句話，總字數不超過300字。
     如果問題與「軟體工程」無關，或是答案無法從資訊得知的話，請不要擅自生成答案。
 
     【問題】
@@ -179,30 +179,42 @@ if __name__ == '__main__':
     result_list = list()
     for i, data in enumerate(dataset, 1):
         print(f"[{i}/{len(dataset)}] 執行問題：{data['question']}")
-        contexts, response = asyncio.run(get_retrieved_contexts(neo4j_textbook_kg_retriever, question=data["question"], component_name="desc_reasoner", document_name="knowledge_base"))
-        # contexts, response = asyncio.run(get_retrieved_contexts(neo4j_retriever, question=data["question"], component_name="retriever", document_name="documents", chapter=data["chapter"]))
-        # contexts, response = asyncio.run(llm_retrieved_context(data["question"], data["chapter"]))
+        try:
+            # contexts, response = asyncio.run(get_retrieved_contexts(neo4j_textbook_kg_retriever, question=data["question"], component_name="desc_reasoner", document_name="knowledge_base"))
+            # contexts, response = asyncio.run(get_retrieved_contexts(neo4j_retriever, question=data["question"], component_name="retriever", document_name="documents", chapter=data["chapter"]))
+            contexts, response = asyncio.run(llm_retrieved_context(data["question"], data["chapter"]))
 
-        context_precision_score = asyncio.run(context_precision(data["question"], data["reference"], contexts))
-        context_recall_score = asyncio.run(context_recall(data["question"], data["reference"], contexts))
-        # faithfulness_score = asyncio.run(faithfulness(data["question"], response, contexts))
-        # response_revelency_score = asyncio.run(response_revelency(data["question"], response))
-        # answer_accuracy_score = asyncio.run(answer_accuracy(data["question"], data["reference"], response))
-        answer_correctness_score = asyncio.run(answer_correctness(data["question"], data["reference"], response))
-        average_score = statistics.fmean([context_precision_score, context_recall_score, answer_correctness_score])
-        result_list.append({
-                "question": data["question"],
-                "reference_response": data["reference"],
-                "llm_response": response,
-                "retrieved_contexts": contexts,
-                "context_precision_score": context_precision_score,
-                "context_recall_score": context_recall_score,
-                "answer_correctness_score": answer_correctness_score,
-                "average_score": round(average_score, 2) 
-        })
+            context_precision_score = asyncio.run(context_precision(data["question"], data["reference"], contexts))
+            context_recall_score = asyncio.run(context_recall(data["question"], data["reference"], contexts))
+            # faithfulness_score = asyncio.run(faithfulness(data["question"], response, contexts))
+            # response_revelency_score = asyncio.run(response_revelency(data["question"], response))
+            # answer_accuracy_score = asyncio.run(answer_accuracy(data["question"], data["reference"], response))
+            answer_correctness_score = asyncio.run(answer_correctness(data["question"], data["reference"], response))
+            average_score = statistics.fmean([context_precision_score, context_recall_score, answer_correctness_score])
+            result_list.append({
+                    "question": data["question"],
+                    "reference_response": data["reference"],
+                    "llm_response": response,
+                    "retrieved_contexts": contexts,
+                    "context_precision_score": context_precision_score,
+                    "context_recall_score": context_recall_score,
+                    "answer_correctness_score": answer_correctness_score,
+                    "average_score": round(average_score, 2) ,
+                    "is_success": True
+            })
+        except Exception as e:
+            print("Evaluation error: ", e)
+            result_list.append({
+                    "question": data["question"],
+                    "reference_response": data["reference"],
+                    "llm_response": response,
+                    "retrieved_contexts": contexts,
+                    "is_success": False
+            })
+
 
     current_dir = Path(__file__).parent
-    output_file = current_dir.parent/"md_files"/"JSON"/"evaluation"/"rag_evaluation_kg_desc_ac.json"
+    output_file = current_dir.parent/"md_files"/"JSON"/"evaluation"/"rag_evaluation_llm_ac.json"
     with open(output_file, 'w', encoding="utf-8") as f:
         json.dump(result_list, f, indent=2, ensure_ascii=False)
 
