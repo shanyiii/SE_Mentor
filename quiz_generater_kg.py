@@ -1,7 +1,7 @@
 import os, ast, asyncio
 from pydantic import BaseModel
 
-from neo4j_impoter import Neo4jImoprter
+from neo4j_importer import Neo4jImporter
 from mongo_controller import DiagnosisQuiz, init_mongo
 from config import NEO4J_PASSWORD, OPENAI_API_KEY
 

@@ -1,4 +1,5 @@
-import asyncio, json, os, statistics, re
+import asyncio, json, os, statistics, re, sys
+from pathlib import Path
 from pydantic import BaseModel
 from typing import Tuple
 
@@ -10,6 +11,7 @@ from ragas.llms import llm_factory
 from ragas.embeddings.base import embedding_factory
 from ragas.metrics.collections import ContextPrecision, ContextRecall, Faithfulness, AnswerRelevancy, AnswerAccuracy, AnswerCorrectness
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 from haystack_controller import neo4j_retriever, neo4j_textbook_kg_retriever
 from ragas_dataset import dataset
 from config import CLAUDE_API_KEY, OPENAI_API_KEY
@@ -66,13 +68,13 @@ async def llm_retrieved_context(question: str, chapter: str) ->  Tuple[list[str]
     return res.output_parsed.retrieved_contents, res.output_parsed.response
 
 async def get_retrieved_contexts(func, question: str, component_name: str, document_name: str, chapter: str = None) -> Tuple[list[str], str]:
-    result = func(question, chapter)
-    # result = func(question)
+    # result = func(question, chapter)
+    result = func(question)
     retrieved_docs = result[component_name][document_name]
-    retrieved_contexts = [doc.content for doc in retrieved_docs]
-    # retrieved_contexts = [retrieved_docs]
-    response = result["llm"]["replies"][0]._content[0].text
-    # response = result["answer_llm"]["replies"][0]
+    # retrieved_contexts = [doc.content for doc in retrieved_docs]
+    retrieved_contexts = [retrieved_docs]
+    # response = result["llm"]["replies"][0]._content[0].text
+    response = result["answer_llm"]["replies"][0]
     print("="*30)
     # print(response)
     return retrieved_contexts, response
@@ -176,8 +178,8 @@ if __name__ == '__main__':
 
     result_list = list()
     for data in dataset:
-        # contexts, response = asyncio.run(get_retrieved_contexts(neo4j_textbook_kg_retriever, question=data["question"], component_name="desc_reasoner", document_name="knowledge_base"))
-        contexts, response = asyncio.run(get_retrieved_contexts(neo4j_retriever, question=data["question"], component_name="retriever", document_name="documents", chapter=data["chapter"]))
+        contexts, response = asyncio.run(get_retrieved_contexts(neo4j_textbook_kg_retriever, question=data["question"], component_name="desc_reasoner", document_name="knowledge_base"))
+        # contexts, response = asyncio.run(get_retrieved_contexts(neo4j_retriever, question=data["question"], component_name="retriever", document_name="documents", chapter=data["chapter"]))
         # contexts, response = asyncio.run(llm_retrieved_context(data["question"], data["chapter"]))
 
         context_precision_score = asyncio.run(context_precision(data["question"], data["reference"], contexts))

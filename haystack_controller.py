@@ -174,7 +174,7 @@ class DescriptionBasedReasoning:
                 if not knowledge_text:
                     return {"knowledge_base": "查無資料"}
                 
-                # print(f"[debug] knowledge text: \n{knowledge_text}")
+                print(f"[debug] knowledge text: \n{knowledge_text}")
                 return {"knowledge_base": knowledge_text}
             
             except Exception as e:
@@ -702,7 +702,7 @@ if __name__ == '__main__':
 
     # asyncio.run(filter_retrieval_test())
 
-    question = "請問管理員可以操作哪些功能？"
+    question = "請幫我找出跟訂單有關的API輸入資料"
     # res = neo4j_retriever(question)
     # for d in  res["retriever"]["documents"]:
     #     print(d.content)
