@@ -495,13 +495,8 @@ def _build_kg_pipeline(kw_prompt_builder: PromptBuilder) -> Pipeline:
     answer_prompt_template = """
     你是一位專業的軟體工程教學助教。請根據以下檢索到的資料，用台灣繁體中文回答學生的問題。
 
-<<<<<<< HEAD
-    【教學資料】
-    {{ documents }}
-=======
     【資料】
     {{documents}}
->>>>>>> feat/structured_collaboration
 
     【學生問題】
     {{question}}
