@@ -1,7 +1,7 @@
-import os, ast, asyncio
+import os, ast, asyncio, random
 from pydantic import BaseModel
 
-from neo4j_impoter import Neo4jImoprter
+from neo4j_importer import Neo4jImporter
 from mongo_controller import DiagnosisQuiz, init_mongo
 from config import NEO4J_PASSWORD, OPENAI_API_KEY
 
@@ -136,8 +136,9 @@ async def upload_quiz_to_mongo():
 async def get_quizes():
     quiz_client = await init_mongo("TABotAI_quiz")
     quiz_list = await DiagnosisQuiz.find({"chapter": "[04]敏捷開發方法"}).to_list()
-    for quiz in quiz_list:
-        print(quiz.question)
+    numbers = random.sample(range(0, 6), 3)
+    question_list = [quiz_list[n] for n in numbers]
+    return question_list
 
 if __name__ == '__main__':    
     asyncio.run(upload_quiz_to_mongo())

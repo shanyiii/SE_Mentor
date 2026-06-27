@@ -8,7 +8,7 @@ from discord import app_commands
 from opencc import OpenCC
 
 from quiz_generater_llm import generate_quiz_llm
-from quiz_generater_kg import generate_quiz_kg
+from quiz_generater_kg import get_quizes
 from haystack_controller import neo4j_generate_notes, neo4j_retriever, neo4j_doc_retriever, neo4j_textbook_kg_retriever
 from mongo_controller import DiagnosisQuiz, init_mongo
 from config import DISCORD_TOKEN
@@ -141,19 +141,19 @@ def printout_questions(question_list):
         print("\n")
 
 # ----- Slash Command -----
-@bot.tree.command(name="quiz_llm", description="開始測驗")
-async def quiz_llm(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
+# @bot.tree.command(name="quiz_llm", description="開始測驗")
+# async def quiz_llm(interaction: discord.Interaction):
+#     await interaction.response.defer(ephemeral=True)
 
-    try:
-        question_list = await generate_quiz_llm()
-        printout_questions(question_list)
-        view = QuizView(question_list)
-        await interaction.followup.send(view.get_question(), view=view)
+#     try:
+#         question_list = await generate_quiz_llm()
+#         printout_questions(question_list)
+#         view = QuizView(question_list)
+#         await interaction.followup.send(view.get_question(), view=view)
     
-    except Exception as e:
-        # 萬一生成失敗，發送錯誤訊息給使用者
-        await interaction.followup.send(f"題目生成失敗：{e}")
+#     except Exception as e:
+#         # 萬一生成失敗，發送錯誤訊息給使用者
+#         await interaction.followup.send(f"題目生成失敗：{e}")
 
 @bot.tree.command(name="quiz_kg", description="開始測驗")
 async def quiz_kg(interaction: discord.Interaction):
@@ -162,9 +162,7 @@ async def quiz_kg(interaction: discord.Interaction):
 
     try:
         # question_list = await generate_quiz_kg()
-        quiz_list = await DiagnosisQuiz.find({"chapter": "[04]敏捷開發方法"}).to_list()
-        numbers = random.sample(range(0, 6), 3)
-        question_list = [quiz_list[n] for n in numbers]
+        question_list = await get_quizes()
         # printout_questions(question_list)
         view = QuizView(question_list)
         await interaction.followup.send(view.get_question(), view=view)
@@ -173,13 +171,13 @@ async def quiz_kg(interaction: discord.Interaction):
         # 萬一生成失敗，發送錯誤訊息給使用者
         await interaction.followup.send(f"題目生成失敗：{e}")
 
-@bot.tree.command(name="document_question", description="專案問答", guild=GUILD_ID)
+@bot.tree.command(name="project_qa", description="專案問答")
 @app_commands.describe(question="請輸入你的問題")
-async def document_question(interaction: discord.Interaction, question: str):
+async def project_qa(interaction: discord.Interaction, question: str):
     await interaction.response.defer(ephemeral=True)
     try:
         response = await run_blocking(neo4j_doc_retriever, question, "第七組")
-        content = f"> {question}\n\n{response}"
+        content = f"> {question}\n\n{response['answer_llm']['replies'][0]}"
         await interaction.followup.send(content=content)
     
     except Exception as e:
@@ -204,8 +202,8 @@ async def course_qa(interaction: discord.Interaction, question: str):
 # 調用event函式庫
 @bot.event
 async def on_ready():
-    bot.tree.clear_commands(guild=GUILD_ID)
-    # bot.tree.copy_global_to(guild=GUILD_ID)
+    # bot.tree.clear_commands(guild=GUILD_ID)
+    bot.tree.copy_global_to(guild=GUILD_ID)
     slash = await bot.tree.sync()
     print(f"目前登入身份：{bot.user}")
     print(f"在測試伺服器載入 {len(slash)} 個斜線指令")
