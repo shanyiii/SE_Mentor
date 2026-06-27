@@ -175,9 +175,9 @@ class DescriptionBasedReasoning:
                     LIMIT 20;
                     """
                     result = session.run(cypher, keywords=kw_list)
-                knowledge_text_list = self._format_knowledge(result)
+                knowledge_text = self._format_knowledge(result)
                 # records = [str(record.data()) for record in result]
-                if not knowledge_text_list:
+                if not knowledge_text:
                     return {"knowledge_base": "查無資料"}
                 
                 print(f"[debug] knowledge text: \n{knowledge_text}")
@@ -247,7 +247,7 @@ class DescriptionBasedReasoning:
                     if rel['targetDesc']:
                         knowledge_text.append(f"    {rel['target']} 是 {rel['targetDesc']}")
             
-        knowledge_text.append("")
+            knowledge_text.append("")
         
         return "\n".join(knowledge_text)
 
@@ -738,7 +738,7 @@ def neo4j_doc_retriever(question: str, group_id: str) -> str:
         data={
             "kw_prompt": {"question": question},
             "answer_prompt": {"question": question},
-            "desc_reasoner": {"group_id": group_id}, 
+            "desc_reasoner": {"group_id": group_id}
         },
         include_outputs_from=["desc_reasoner", "answer_llm"]
     )
@@ -878,7 +878,7 @@ if __name__ == '__main__':
 
     # res = neo4j_textbook_kg_retriever(question
     res = neo4j_doc_retriever(question, "第七組")
-    # print(res["desc_reasoner"]["knowledge_base"])
+    print(res["desc_reasoner"]["knowledge_base"])
     print("="*30)
     print(res["answer_llm"]["replies"][0])
 
