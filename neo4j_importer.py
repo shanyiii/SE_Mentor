@@ -166,7 +166,7 @@ class Neo4jImporter:
 
                 cypher_query = """
                 UNWIND $batch AS row
-                CALL{
+                CALL (row) {
                     WITH row
                     CALL apoc.merge.node([row.subject.label], {name: row.subject.name, group: $group}, {}, {}) YIELD node AS sNode
                     SET sNode += row.subject.props_dict
@@ -196,7 +196,7 @@ class Neo4jImporter:
             logger.error(f"Fail to upload to Neo4j: {e}")
             return False
 
-    def upload_std_entities(self, entity_list: EntityList, source_file: str, doc_type: str, group: str) -> bool:
+    def upload_entities(self, entity_list: EntityList, source_file: str, doc_type: str, group: str) -> bool:
         try:
             with self.driver.session() as session:
                 labels = ["Requirement", "Service", "SystemComponent", "API", "TestCase", "Actor", "General", "Technology", "Methodology", "Concept"]
@@ -214,19 +214,18 @@ class Neo4jImporter:
                     # 強制轉換 Enum 為字串
                     item["label"] = str(t.label.value)
 
-                    s_kv = item.get("properties") or []
-                    item["props_dict"] = {kv["key"]: kv["value"] for kv in s_kv} if s_kv else {}
+                    item["props_dict"] = self.convert_properties_to_dict(item.get("properties") or [])
 
-                    reference = item["props_dict"].get("req_reference")
-                    if reference:
-                        reference_list = [r.strip() for r in reference.split(',')]
-                        item["props_dict"]["req_reference"] = reference_list
+                    # reference = item["props_dict"].get("req_reference")
+                    # if reference:
+                    #     reference_list = [r.strip() for r in reference.split(',')]
+                    #     item["props_dict"]["req_reference"] = reference_list
 
                     data_to_upload.append(item)
 
                 cypher_query = """
                 UNWIND $batch AS row
-                CALL {
+                CALL (row) {
                     WITH row
                     CALL apoc.merge.node([row.label], {name: row.name, group: $group}, {}, {}) YIELD node AS node
                     SET node += row.props_dict
@@ -246,6 +245,28 @@ class Neo4jImporter:
             logger.error(f"Fail to upload to Neo4j: {e}")
             return False
         
+    def convert_properties_to_dict(self, properties_list):
+        """把 properties 轉成 dict，同 key 多值時變成 list"""
+        props_dict = {}
+        for kv in properties_list:
+            key = kv["key"]
+            value = kv["value"]
+            
+            if key in props_dict:
+                # 已存在同 key，轉成 list 或加入 list
+                if not isinstance(props_dict[key], list):
+                    props_dict[key] = [props_dict[key]]
+                props_dict[key].append(value)
+            else:
+                props_dict[key] = value
+        
+        # 最後確保 req_reference 一律是 list（即使只有一個值）
+        if "req_reference" in props_dict:
+            if not isinstance(props_dict["req_reference"], list):
+                props_dict["req_reference"] = [props_dict["req_reference"]]
+        
+        return props_dict
+
     def link_references_to_requirements(self, label: str, doc_type: str, group: str, rel_type: str) -> bool:
         cypher = f"""
         MATCH (n:{label})

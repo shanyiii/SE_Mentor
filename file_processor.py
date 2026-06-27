@@ -82,12 +82,13 @@ def remove_specific_sections(text):
         r'(^##\s*\d\.\s測試工作指派與時程.*?)(?=^##\s|^#\s|\Z)',
         r'(^##\s*\d\.\s測試結果與分析.*?)(?=^##\s|^#\s|\Z)',
         r'(^##\s*\d\.\s測試環境.*?)(?=^##\s|^#\s|\Z)',
-        r'(^##\s*\d\.\s追溯表.*?)(?=^##\s|^#\s|\Z)'
+        r'(^##\s*\d\.\s追溯表.*?)(?=^##\s|^#\s|\Z)',
+        r'(^##\s*\d\.\s測試目的與接受準則.*?)(?=^##\s|^#\s|\Z)'
     ]
 
     for r in re_list:
         text = re.sub(r, '', text, flags=re.MULTILINE | re.DOTALL)
-        
+
     return text
 
 def detect_and_extract_tables(text: str) -> List[str]:

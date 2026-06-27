@@ -18,7 +18,9 @@ from haystack.components.embedders import SentenceTransformersTextEmbedder, Sent
 from neo4j_haystack import Neo4jEmbeddingRetriever, Neo4jDocumentStore
 from neo4j import GraphDatabase
 
-from file_processor import md_splitter, clean_markdown
+from sentence_transformers import SentenceTransformer
+
+from file_processor import md_splitter, clean_markdown, remove_specific_sections, replace_tables_in_text
 from config import OPENAI_API_KEY, NEO4J_PASSWORD, CLAUDE_API_KEY, GEMINI_API_KEY
 from common import TASK_CONFIGS
 
@@ -143,12 +145,13 @@ class DescriptionBasedReasoning:
                     WHERE apoc.text.fuzzyMatch(entity.name, keyword) and entity.group = $group
                     OPTIONAL MATCH (entity)-[rel]-(neighbor)
                     RETURN 
-                        entity.name AS entityName,
-                        entity.description AS entityDesc,
+                        entity as entity,
+                        labels(entity)[0] AS entityLabel,
                         type(rel) AS relationType,
                         rel.description AS relationDesc,
                         neighbor.name AS neighborName,
-                        neighbor.description AS neighborDesc
+                        neighbor.description AS neighborDesc,
+                        labels(neighbor)[0] AS neighborLabel
                     LIMIT 20;
                     """
                     result = session.run(cypher, keywords=kw_list, group=group_id)
@@ -160,12 +163,13 @@ class DescriptionBasedReasoning:
                     WHERE apoc.text.fuzzyMatch(entity.name, keyword)
                     OPTIONAL MATCH (entity)-[rel]-(neighbor)
                     RETURN 
-                        entity.name AS entityName,
-                        entity.description AS entityDesc,
+                        entity as entity,
+                        labels(entity)[0] AS entityLabel,
                         type(rel) AS relationType,
                         rel.description AS relationDesc,
                         neighbor.name AS neighborName,
-                        neighbor.description AS neighborDesc
+                        neighbor.description AS neighborDesc,
+                        labels(neighbor)[0] AS neighborLabel
                     LIMIT 20;
                     """
                     result = session.run(cypher, keywords=kw_list)
@@ -191,25 +195,44 @@ class DescriptionBasedReasoning:
         # 依節點分組
         entity_info = {}
         for record in records:
-            entity = record['entityName']
-            if entity not in entity_info:
-                entity_info[entity] = {
-                    'description': record['entityDesc'],
+            entity_dict = dict(record['entity'])
+            entity_name = entity_dict['name']
+            entity_label = record['entityLabel']
+
+            if entity_name not in entity_info:
+                entity_info[entity_name] = {
+                    'label': entity_label,
+                    'properties': entity_dict,
                     'relations': []
                 }
             
             if record['neighborName']:
-                entity_info[entity]['relations'].append({
+                entity_info[entity_name]['relations'].append({
                     'type': record['relationType'],
                     'typeDesc': record['relationDesc'],
                     'target': record['neighborName'],
+                    'targetLabel': record['neighborLabel'],
                     'targetDesc': record['neighborDesc']
                 })
         
         knowledge_text = []
-        for entity, info in entity_info.items():
-            # 實體及其定義
-            knowledge_text.append(f"【{entity}】\n{info['description']}")
+        for entity_name, info in entity_info.items():
+            label = info['label']
+            props = info['properties']
+
+            # 根據節點類型選擇格式化方法
+            if label == 'API':
+                formatted = self._format_api_entity(entity_name, props)
+            elif label == 'Requirement':
+                formatted = self._format_requirement_entity(entity_name, props)
+            elif label == 'UserStory':
+                formatted = self._format_userstory_entity(entity_name, props)
+            elif label == 'SystemComponent':
+                formatted = self._format_system_component_entity(entity_name, props)
+            else:
+                formatted = self._format_default_entity(entity_name, props)
+
+            knowledge_text.append(formatted)
             
             # 相關實體
             if info['relations']:
@@ -217,16 +240,94 @@ class DescriptionBasedReasoning:
                 for rel in info['relations']:
                     rel_desc = rel['typeDesc'] or f"({rel['type']})"
                     knowledge_text.append(
-                        f"- {entity} {rel['type']} {rel['target']}: {rel_desc}"
+                        f"- {entity_name} {rel['type']} {rel['target']}: {rel_desc}"
                     )
                     if rel['targetDesc']:
                         knowledge_text.append(f"    {rel['target']} 是 {rel['targetDesc']}")
             
             knowledge_text.append("")
         
-        # print(len(knowledge_text))
-        # print(knowledge_text[16:18])
         return "\n".join(knowledge_text)
+
+    def _format_api_entity(self, name: str, props: dict) -> str:
+        """API 節點的特殊格式化"""
+        lines = [f"【API】{name}"]
+        
+        if props.get('description'):
+            lines.append(f"描述：{props['description']}")
+        
+        if props.get('api_provider'):
+            lines.append(f"提供者：{props['api_provider']}")
+        
+        if props.get('input_value'):
+            lines.append(f"輸入：{props['input_value']}")
+        
+        if props.get('output_value'):
+            lines.append(f"輸出：{props['output_value']}")
+        
+        if props.get('api_user'):
+            lines.append(f"使用者：{props['api_user']}")
+        
+        if props.get('req_reference'):
+            req_ref = props['req_reference']
+            if isinstance(req_ref, list):
+                req_ref = '、'.join(req_ref)
+            lines.append(f"對應需求：{req_ref}")
+        
+        return "\n".join(lines)
+
+    def _format_requirement_entity(self, name: str, props: dict) -> str:
+        """Requirement 節點的特殊格式化"""
+        lines = [f"【需求】{name}"]
+        
+        if props.get('description'):
+            lines.append(f"描述：{props['description']}")
+        
+        if props.get('req_id'):
+            lines.append(f"編號：{props['req_id']}")
+        
+        if props.get('req_category'):
+            lines.append(f"類別：{props['req_category']}")
+        
+        return "\n".join(lines)
+
+    def _format_userstory_entity(self, name: str, props: dict) -> str:
+        """UserStory 節點的特殊格式化"""
+        lines = [f"【使用者故事】{name}"]
+        
+        if props.get('description'):
+            lines.append(f"描述：{props['description']}")
+        
+        if props.get('us_id'):
+            lines.append(f"編號：{props['us_id']}")
+
+        if props.get('req_reference'):
+            req_ref = props['req_reference']
+            if isinstance(req_ref, list):
+                req_ref = '、'.join(req_ref)
+            lines.append(f"對應需求：{req_ref}")
+        
+        return "\n".join(lines)
+
+    def _format_system_component_entity(self, name: str, props: dict) -> str:
+        """SystemComponent 節點的特殊格式化"""
+        lines = [f"【系統元件】{name}"]
+        
+        if props.get('description'):
+            lines.append(f"描述：{props['description']}")
+        
+        # 如果有其他特定的服務屬性，這裡可以加
+        
+        return "\n".join(lines)
+
+    def _format_default_entity(self, name: str, props: dict) -> str:
+        """預設格式化"""
+        lines = [f"【{props.get('type', '概念')}】{name}"]
+        
+        if props.get('description'):
+            lines.append(f"描述：{props['description']}")
+        
+        return "\n".join(lines)
 
 @component
 class VectorSearchFilter:
@@ -301,18 +402,21 @@ def upload_to_neo4j(documents: list[Document]):
     print(document_store.count_documents())
 
 # 替 chunk 加上 metadata 並轉為 Document 物件
-def add_metadata(md_documents: list[Document], source_file: str, content_tags: list[str]) -> list[Document]:
+def add_metadata(md_documents: list[str], metadata: dict) -> list[Document]:
     documents = list()
-    for doc, content_tag in zip(md_documents, content_tags):
-        cleaned_md = clean_markdown(doc.page_content)
+    # for doc, content_tag in zip(md_documents, content_tags):
+    #     cleaned_md = clean_markdown(doc.page_content)
+    #     documents.append(
+    #         Document(
+    #             content=f"{content_tag}\n\n{cleaned_md}",
+    #             meta=metadata
+    #         )
+    #     )
+    for doc in md_documents:
         documents.append(
             Document(
-                content=f"{content_tag}\n\n{cleaned_md}",
-                meta={
-                    "content_type": "textbook",
-                    "source_file": source_file,
-                    "tags": content_tag
-                }
+                content=doc,
+                meta=metadata
             )
         )
         # doc.meta["page"]
@@ -387,9 +491,9 @@ def _build_kg_pipeline(kw_prompt_builder: PromptBuilder) -> Pipeline:
     # 答案：
     # """
     answer_prompt_template = """
-    你是一位專業的軟體工程教學助教。請根據以下檢索到的教學資料，用台灣繁體中文回答學生的問題。
+    你是一位專業的軟體工程教學助教。請根據以下檢索到的資料，用台灣繁體中文回答學生的問題。
 
-    【教學資料】
+    【資料】
     {{documents}}
 
     【學生問題】
@@ -435,10 +539,24 @@ def _build_kg_pipeline(kw_prompt_builder: PromptBuilder) -> Pipeline:
     return pipeline
 
 # ----- task functions -----
-def neo4j_retriever(question: str, chapter: str = None) -> dict[str, Any]:
+def neo4j_retriever(question: str, chapter: str = None, group: str = None) -> dict[str, Any]:
+    filters = dict()
     if chapter:
         file_names = ["[01]軟體危機與軟體流程", "[02]基礎需求工程", "[03]使用者故事分析", "[04]敏捷開發方法", "[05]基礎專案管理與看板", "[06]版本控制", "[07]軟體設計-系統設計", "[08]軟體設計-模組設計", "[09]軟體測試", "[10]進階軟體測試", "[11]DevOps自動化建置管理"]
         chapter_name = file_names[int(chapter)-1]
+        filters = {
+                    "field": "source_file",
+                    "operator": "==",
+                    "value": f"{chapter_name}.pdf"
+                }
+
+    if group:
+        filters = {
+                    "field": "group",
+                    "operator": "==",
+                    "value": group
+                }
+
     response_template = [
         ChatMessage.from_user(
             """
@@ -468,12 +586,7 @@ def neo4j_retriever(question: str, chapter: str = None) -> dict[str, Any]:
             "ranker": {"query": question},
             "retriever": {
                 "top_k": TASK_CONFIGS["retriever"]["top_k"],
-                # "filters": filters
-                "filters": {
-                    "field": "source_file",
-                    "operator": "==",
-                    "value": f"{chapter_name}.pdf"
-                }
+                "filters": filters
             },
             # "llm":{"generation_kwargs":{"max_tokens": TASK_CONFIGS["retriever"]["max_tokens"]}}
         },
@@ -521,23 +634,6 @@ def neo4j_generate_notes(concept: str) -> str:
     return result
 
 def neo4j_textbook_kg_retriever(question: str) -> dict[str, Any]:
-    # 將問題轉為 Cypher 的 Prompt
-    # cypher_prompt_template = """
-    # 你是一位 Neo4j 專家。請根據以下 Schema 將使用者的問題轉化為精確的 Cypher 查詢語句，並以 string 形式輸出。
-
-    # 【Schema 資訊】
-    # - Labels: Requirement, SystemComponent, API, TestCase, Actor, General, Concept, Technology, Methodology
-    # - Properties: name, group, source_files, description, (以及其他從文件提取的屬性)
-    # - Relationships: 是, 部分, 實作, 使用, 操作, 依賴, 改善, 解決
-
-    # 【限制條件】
-    # - 只輸出 Cypher 語句，不要任何解釋或 markdown 標籤。
-    # - 盡量使用關鍵字模糊匹配 (CONTAINS) 以提高檢索成功率。
-
-    # 使用者的問題: {{question}}
-    # 生成的 Cypher:
-    # """
-
     keyword_prompt_template = """
     請根據以下 Neo4j Schema 替使用者的問題生成 2 至 3 個關鍵字，用來檢索知識圖譜中的實體。請僅輸出關鍵字，且關鍵字之間請用頓號(、)隔開。
 
@@ -550,7 +646,7 @@ def neo4j_textbook_kg_retriever(question: str) -> dict[str, Any]:
     生成的關鍵字:
     """
 
-    pipeline = _build_kg_pipeline(PromptBuilder(template=keyword_prompt_template))
+    pipeline = _build_kg_pipeline(PromptBuilder(template=keyword_prompt_template, required_variables=["question"]))
 
     result = pipeline.run(
         data={
@@ -565,38 +661,76 @@ def neo4j_textbook_kg_retriever(question: str) -> dict[str, Any]:
     # return result
     return result
 
+# 取回所有文件節點
+def build_entity_index(uri: str, user: str, password: str, group_id: str) -> Dict[str, List[str]]:
+    driver = GraphDatabase.driver(uri, auth=(user, password))
+
+    with driver.session() as session:
+        cypher = """
+        MATCH (n)
+        WHERE n.group = $group
+        RETURN labels(n) AS labels, n.name AS name, n.description AS description
+        ORDER BY labels[0], n.name
+        """
+        
+        result = session.run(cypher, group=group_id)
+        
+        entity_index = {}
+        for record in result:
+            label = record['labels'][0]  # 取第一個標籤
+            name = record['name']
+            desc = record['description']
+            
+            if label not in entity_index:
+                entity_index[label] = []
+            
+            entity_index[label].append({
+                'name': name,
+                'description': desc
+            })
+        
+        return entity_index
+
+def format_entity_list(entity_index):
+    text = list()
+    for label, entities in entity_index.items():
+        text.append(f"【{label}】")
+        for entity in entities:
+            text.append(f"- 實體：{entity['name']}")
+            text.append(f"    相關描述：{entity['description']}")
+    entity_text = "\n".join(text)
+    return entity_text
+
 def neo4j_doc_retriever(question: str, group_id: str) -> str:
-    # 將問題轉為 Cypher 的 Prompt
-    # cypher_prompt_template = """
-    # 你是一位 Neo4j 專家。請根據以下 Schema 將使用者的問題轉化為精確的 Cypher 查詢語句，並以 string 形式輸出。
-
-    # 【Schema 資訊】
-    # - Labels: Requirement, SystemComponent, API, TestCase, Actor, General
-    # - Properties: name, group, source_files, description, (以及其他從文件提取的屬性)
-    # - Relationships: 是, 部分, 實作, 使用, 操作, 依賴, 改善, 解決
-
-    # 【限制條件】
-    # - 必須包含 `group == '{{group}}'` 的過濾條件。
-    # - 只輸出 Cypher 語句，不要任何解釋或 markdown 標籤。
-    # - 盡量使用關鍵字模糊匹配 (CONTAINS) 以提高檢索成功率。
-
-    # 使用者的問題: {{question}}
-    # 生成的 Cypher:
-    # """
-
     keyword_prompt_template = """
-    請根據以下 Neo4j Schema 替使用者的問題生成 2 至 3 個關鍵字，用來檢索知識圖譜中的實體。請僅輸出關鍵字，且關鍵字之間請用頓號(、)隔開。
+    你是軟體工程知識助手。請根據使用者問題，從以下實體清單中選出最相關的 2-3 個實體。
 
-    【Schema 資訊】
-    - Labels: Concept, Requirement, Actor, Methodology, SystemComponent, TestCase
-    - Properties: name, group, source_files, description, req_id, req_category
-    - Relationships: 是, 包含於, 實作, 使用, 操作, 依賴, 改善, 解決
+    【可選實體清單】
 
-    使用者的問題: {{question}}
-    生成的關鍵字:
+    (entity_list)
+
+    【使用者問題】
+    {{question}}
+
+    任務：
+    1. 理解使用者的問題意圖
+    2. 從清單中選出最相關的實體名稱
+    3. 只輸出實體名稱，名稱之間用頓號(、)隔開
+
+    範例：
+    - 使用者問：「管理員可以做什麼？」
+    - 你應該回答：系統管理員、系統管理功能、...
+
+    使用者問題：{{question}}
+    答案（只輸出實體名稱）：
     """
 
-    pipeline = _build_kg_pipeline(PromptBuilder(template=keyword_prompt_template))
+    entity_index = build_entity_index(uri="bolt://localhost:7687", user="neo4j", password=NEO4J_PASSWORD, group_id="第七組")
+    entity_list_text = format_entity_list(entity_index)
+    keyword_prompt_template = keyword_prompt_template.replace(
+        "(entity_list)", entity_list_text
+    )
+    pipeline = _build_kg_pipeline(PromptBuilder(template=keyword_prompt_template, required_variables=["question"]))
 
     result = pipeline.run(
         data={
@@ -675,8 +809,38 @@ async def upload_2_vectordb(chapter, textbook_name):
     # documents = [Document(content=clean_markdown(doc.page_content)) for doc in md_documents] # 在 add_metadata 做
     content_tags = [tags_w_id[str(i)] for i in range(0, len(md_documents))]
     # print(content_tags[:5])
-    documents = add_metadata(md_documents, f"{textbook_name}.pdf", content_tags)
+    metadata = {
+        "content_type": "textbook",
+        "source_file": f"{textbook_name}.pdf",
+        "tags": content_tags
+    }
+    documents = add_metadata(md_documents, metadata)
 
+    upload_to_neo4j(documents)
+
+async def upload_doc_2_vectordb(file_path, doc_type, group_name):
+    try:
+        with open(file_path, 'r', encoding='utf-8') as input_file:
+            md_content = input_file.read()
+    except FileNotFoundError:
+        print("Error: The specified file was not found.")
+        return
+
+    cleaned_md = clean_markdown(md_content)
+    cleaned_md = remove_specific_sections(cleaned_md)
+    md_documents = md_splitter(cleaned_md)
+    document_contents = list()
+    for doc in md_documents:
+        table_extracted_string = replace_tables_in_text(doc.page_content)
+        document_contents.append(table_extracted_string)
+
+    metadata = {
+        "doc_type": doc_type,
+        "group": group_name,
+        "store_type": "vector"
+    }
+
+    documents = add_metadata(document_contents, metadata)
     upload_to_neo4j(documents)
 
 async def filter_retrieval_test():
@@ -702,7 +866,7 @@ if __name__ == '__main__':
 
     # asyncio.run(filter_retrieval_test())
 
-    question = "請幫我找出跟訂單有關的API輸入資料"
+    question = "請告訴我編輯餐廳的API的輸入是什麼"
     # res = neo4j_retriever(question)
     # for d in  res["retriever"]["documents"]:
     #     print(d.content)
@@ -710,12 +874,14 @@ if __name__ == '__main__':
     # print(res["llm"]["replies"][0]._content[0].text)
     # print(res["llm"]["replies"][0])
 
-    # res = neo4j_textbook_kg_retriever(question)
+    # res = neo4j_textbook_kg_retriever(question
     res = neo4j_doc_retriever(question, "第七組")
     print(res["desc_reasoner"]["knowledge_base"])
     print("="*30)
     print(res["answer_llm"]["replies"][0])
 
     # upload_to_vector_db(["C:\\Users\\shanyiii\\Desktop\\mine\\1141軟體工程\\[06]版本控制.pdf"])
+
+    # asyncio.run(upload_doc_2_vectordb("md_files\\document\\海大餐飲外送系統-需求文件(SRD).md", "SRD", "第七組"))
 
     # asyncio.run(main())
