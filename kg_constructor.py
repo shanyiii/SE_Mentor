@@ -6,7 +6,7 @@ from openai import OpenAI
 import anthropic
 
 from file_processor import clean_markdown, md_splitter, replace_tables_in_text, remove_specific_sections
-from neo4j_importer import Neo4jImporter, TripleList, EntityList
+from neo4j_importer import Neo4jImporter, TripleList, EntityList, Entity
 from common import NEO4J_URI
 from config import NEO4J_PASSWORD, GEMINI_API_KEY, CLAUDE_API_KEY
 from prompts import ENTITY_PROMPT_4_TEXTBOOK, TRIPLE_PROMPT_4_TEXTBOOK, ENTITY_PROMPT_4_SRD, TRIPLE_PROMPT_4_SRD, ENTITY_PROMPT_4_SDD, TRIPLE_PROMPT_4_SDD, ENTITY_PROMPT_4_STD, KG_EXAMINATION_PROMPT, ENTITY_EXAMINATION_PROMPT, MATCH_FR_US_PROMPT
@@ -15,7 +15,9 @@ from prompts import ENTITY_PROMPT_4_TEXTBOOK, TRIPLE_PROMPT_4_TEXTBOOK, ENTITY_P
 # client = genai.Client(api_key=GEMINI_API_KEY)
 client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
-def entities_extraction(prompt, user_input):
+def entities_extraction(prompt: str, user_input: str) -> list:
+    """LLM 提取實體 (SDD)"""
+
     # res = client.chat.completions.create(
     #     model="gpt-4o",
     #     messages=[
@@ -57,7 +59,9 @@ def entities_extraction(prompt, user_input):
         print("找不到 list")
         return None
 
-def relations_extraction(prompt, user_input, entities_list):
+def relations_extraction(prompt: str, user_input: str, entities_list: list) -> TripleList:
+    """LLM 提取三元組 (SDD)"""
+
     doc_content = user_input.page_content if hasattr(user_input, 'page_content') else str(user_input)
     input_data = f"""
     實體列表如下：
@@ -111,7 +115,9 @@ def relations_extraction(prompt, user_input, entities_list):
     # return res.parsed_output    # claude
     # return res.parsed     # gemini
 
-def std_entities_extraction(prompt, user_input):
+def entities_extraction_with_properties(prompt: str, user_input: str) -> EntityList:
+    """提取包含屬性的實體"""
+
     doc_content = user_input.page_content if hasattr(user_input, 'page_content') else str(user_input)
     input_data = f"""
     文章內容如下：
@@ -190,18 +196,20 @@ def self_kg_examination(prompt, doc_content, triples):
 
     return res.parsed_output    # claude
 
-def match_fr_to_us_llm(ambiguous_case, prompt):
+def match_fr_to_us_llm(case: dict, prompt: str) -> EntityList:
+    """配對功能需求與使用者故事"""
+
     input_data = f"""
     需求功能實體如下：
 
     <user_story>
-    {ambiguous_case['fr']}
+    {case['fr']}
     </user_story>
 
     候選使用者故事實體列表如下：
 
     <candidates>
-    {ambiguous_case['candidates']}
+    {case['candidates']}
     </candidates>
     """
 
@@ -217,7 +225,10 @@ def match_fr_to_us_llm(ambiguous_case, prompt):
 
     return res.parsed_output
 
-def convert_props_to_dict(raw_list):
+def convert_props_to_dict(raw_list: EntityList) -> list:
+    """
+    把類別屬性轉為字典格式
+    """
     entity_list = list()
     for raw in raw_list.entities:
         # item = dict()
@@ -229,20 +240,28 @@ def convert_props_to_dict(raw_list):
         entity_list.append(item)
     return entity_list
 
-def get_specific_entity_by_label(entity_list, label):
+def get_specific_entity_by_label(entity_list: dict, label: str) -> list:
+    """取得指定標籤的所有實體"""
+    
     prop_list = list()
     for entity in entity_list:
         if entity["label"] == label:
             prop_list.append(entity)
     return prop_list
 
-def extract_actor(text, known_actors):
+def extract_actor(text: str, known_actors: list) -> str:
+    """從描述中取得操作角色"""
+
     for actor in known_actors:
         if actor in text:
             return actor
     return None
 
-def add_req_reference_to_properties(entity_dict: dict, req_ids: list):
+def add_req_reference_to_properties(entity_dict: dict, req_ids: list) -> dict:
+    """
+    更新實體裡的req_reference
+    """
+
     if not entity_dict.get('properties'):
         entity_dict['properties'] = []
     
@@ -261,10 +280,14 @@ def add_req_reference_to_properties(entity_dict: dict, req_ids: list):
     
     return entity_dict
 
-def match_us_to_fr_v2(raw_entity_list):
+def match_us_to_fr_v2(raw_entity_list: EntityList) -> tuple[list, list]:
+    """LLM 去配對功能需求與使用者故事"""
+
+    # 把 EntityList 轉為 dictionary
     entity_list = convert_props_to_dict(raw_entity_list)
     print(len(entity_list))
 
+    # 取得使用者故事及需求
     us_list = get_specific_entity_by_label(entity_list, "UserStory")
     fr_list = get_specific_entity_by_label(entity_list, "Requirement")
     print("us list: ", len(us_list))
@@ -273,6 +296,7 @@ def match_us_to_fr_v2(raw_entity_list):
     llm_matches = list()
 
     for fr in fr_list:
+        # 遍歷功能需求讓 LLM 去配對對應的使用者故事
         llm_result = match_fr_to_us_llm({'fr': fr, 'candidates': us_list}, MATCH_FR_US_PROMPT)
         # print(llm_result)
         llm_matches.append(llm_result)
@@ -281,12 +305,13 @@ def match_us_to_fr_v2(raw_entity_list):
     if llm_matches:
         match_dict = list()
         for case in llm_matches:
+            # 把 EntityList 轉為字典
             match_dict.extend(convert_props_to_dict(case))
 
         # print(match_dict)
 
         for match in match_dict:
-            if match['properties_dict'].get('us_id'):
+            if match['properties_dict'].get('us_id'):   # 判斷是否是使用者故事
                 us_obj = match
 
                 if not match['properties_dict'].get('req_reference'):
@@ -294,6 +319,7 @@ def match_us_to_fr_v2(raw_entity_list):
 
                 if 'req_reference_list' not in us_obj:
                     us_obj['req_reference_list'] = []
+                # 紀錄該使用者故事對應的功能需求編號
                 us_obj['req_reference_list'].append(match['properties_dict']['req_reference'])
 
                 if 'req_reference' not in us_obj['properties_dict']:
@@ -311,10 +337,10 @@ def match_us_to_fr_v2(raw_entity_list):
 
     return match_list, fr_list
 
-def create_actor_relationships(raw_entity_list):
+def create_actor_relationships(raw_entity_list: list) -> list:
     entity_list = convert_props_to_dict(raw_entity_list)
-    print(len(entity_list))
 
+    # 取得所有操作角色 (標籤為 Actor)
     known_actors = get_specific_entity_by_label(entity_list, "Actor")
     known_actors = set(actor["name"] for actor in known_actors)
     print("Actors: ", known_actors)
@@ -322,13 +348,14 @@ def create_actor_relationships(raw_entity_list):
     fr_list = get_specific_entity_by_label(entity_list, "Requirement")
     print("fr list: ", len(fr_list))
     
-    actor_relations = [] 
+    actor_relations = list()
     
     for fr in fr_list:
+        # 從功能需求中抓到操作角色
         fr_actor = extract_actor(fr['properties_dict']['description'], known_actors)
         
         if fr_actor:
-            # 處理 Actor
+            # 紀錄三元組「操作角色-操作->功能需求」
             actor_relations.append({
                 "subject": {"name": fr_actor, "label": "Actor"},
                 "relation": {"name": "操作", "description": f"{fr_actor}可執行「{fr['name']}」"},
@@ -442,116 +469,79 @@ def match_us_to_fr(raw_entity_list, model, similarity_threshold=0.5):
     
     return confident_matches, match_list, fr_list, actor_relations
 
-if __name__ == '__main__':
-    source_file = "海大餐飲外送系統-測試文件(STD).md"
-    # chapter_num = 11
-    doc_type = "STD"
-    # try:
-    #     with open(f"md_files\\document\\{source_file}", 'r', encoding='utf-8') as input_file:
-    #         md_content = input_file.read()
-    # except FileNotFoundError:
-    #     print("Error: The specified file was not found.")
-    #     sys.exit(0)
+def kg_construction_pipeline(document_contents: list) -> TripleList:
+    doc_entity_pairs = list()
+    page_entities_list = list()
 
-    # cleaned_md = clean_markdown(md_content)
-    # cleaned_md = remove_specific_sections(cleaned_md)
-    # md_documents = md_splitter(cleaned_md)
-    # # print(input_data)
-
-    # document_contents = list()
-    # for doc in md_documents:
-    #     table_extracted_string = replace_tables_in_text(doc.page_content)
-        # document_contents.append(table_extracted_string)
-
-    # document_content = '\n+++\n'.join(document_contents)
-    # with open(f"md_files\\document\\processed_std_doc_g7.md", 'w', encoding='utf-8') as f:
-    #     f.write(document_content)
-
-    # doc_entity_pairs = list()
-    # page_entities_list = list()
-
-    # with ThreadPoolExecutor(max_workers=3) as executor:
-    #     future_to_doc = {executor.submit(entities_extraction, ENTITY_PROMPT_4_SRD, content): content for content in document_contents}
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_to_doc = {executor.submit(entities_extraction, ENTITY_PROMPT_4_SRD, content): content for content in document_contents}
         
-    #     for future in as_completed(future_to_doc):
-    #         doc = future_to_doc[future]
-    #         try:
-    #             page_entities = future.result()
-    #             if page_entities:
-    #                 cleaned_page_entities = list(set(e.lower() for e in page_entities))
-    #                 doc_entity_pairs.append((doc, cleaned_page_entities))
-    #                 page_entities_list.extend(cleaned_page_entities)
-    #         except Exception as e:
-    #             print(f"實體抽取 Exception: {e}")
-
-    # with open(f"md_files\\JSON\\kgs\\doc\\doc_entities_g7_srd.json", 'w', encoding="utf-8") as f:
-    #     json.dump(page_entities_list, f, indent=2, ensure_ascii=False)
-
-    # print("實體抽取完成")
-    # list_of_TripleList = list()
+        for future in as_completed(future_to_doc):
+            doc = future_to_doc[future]
+            try:
+                page_entities = future.result()
+                if page_entities:
+                    cleaned_page_entities = list(set(e.lower() for e in page_entities))
+                    doc_entity_pairs.append((doc, cleaned_page_entities))
+                    page_entities_list.extend(cleaned_page_entities)
+            except Exception as e:
+                print(f"實體抽取 Exception: {e}")
     
-    # with ThreadPoolExecutor(max_workers=2) as executor:
-    #     future_to_relation = {
-    #         executor.submit(relations_extraction, TRIPLE_PROMPT_4_SRD, doc, entities): doc 
-    #         for doc, entities in doc_entity_pairs if entities
-    #     }
-        
-    #     for future in as_completed(future_to_relation):
-    #         try:
-    #             triples = future.result()
-    #             if triples:
-    #                 list_of_TripleList.append(triples)
-    #         except Exception as e:
-    #             print(f"關係抽取 Exception: {e}")
+    with open(f"md_files\\JSON\\kgs\\doc\\doc_entities_g7_srd.json", 'w', encoding="utf-8") as f:
+        json.dump(page_entities_list, f, indent=2, ensure_ascii=False)
 
-    # data_to_save = [t.model_dump(mode="json") for triples in list_of_TripleList for t in triples.triples]
-    # with open(f"md_files\\JSON\\kgs\\doc\\doc_triples_g7_srd.json", 'w', encoding="utf-8") as f:
-    #     json.dump(data_to_save, f, indent=2, ensure_ascii=False)
+    print("實體抽取完成")
+    list_of_TripleList = list()
     
-    # print("關係抽取完成")
-    # triple_list = TripleList(triples=data_to_save)
-    # del list_of_TripleList
-    # gc.collect()
-
-    # =====提取測試文件實體=====
-
-    # list_of_EntityList = list()
-    # with ThreadPoolExecutor(max_workers=3) as executor:
-    #     future_to_doc = {executor.submit(std_entities_extraction, ENTITY_PROMPT_4_STD, content): content for content in document_contents}
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_to_relation = {
+            executor.submit(relations_extraction, TRIPLE_PROMPT_4_SRD, doc, entities): doc 
+            for doc, entities in doc_entity_pairs if entities
+        }
         
-    #     for future in as_completed(future_to_doc):
-    #         doc = future_to_doc[future]
-    #         try:
-    #             entities = future.result()
-    #             if entities:
-    #                 list_of_EntityList.append(entities)
-    #         except Exception as e:
-    #             print(f"測試文件實體抽取 Exception: {e}")
+        for future in as_completed(future_to_relation):
+            try:
+                triples = future.result()
+                if triples:
+                    list_of_TripleList.append(triples)
+            except Exception as e:
+                print(f"關係抽取 Exception: {e}")
 
-    # for content in document_contents:
-    #     std_entities_extraction(content, ENTITY_PROMPT_4_STD)
+    data_to_save = [t.model_dump(mode="json") for triples in list_of_TripleList for t in triples.triples]
+    with open(f"md_files\\JSON\\kgs\\doc\\doc_triples_g7_srd.json", 'w', encoding="utf-8") as f:
+        json.dump(data_to_save, f, indent=2, ensure_ascii=False)
+    
+    print("關係抽取完成")
+    triple_list = TripleList(triples=data_to_save)
+    del list_of_TripleList
+    gc.collect()
 
-    # data_to_save = [t.model_dump(mode="json") for entities in list_of_EntityList for t in entities.entities]
+    return triple_list
+
+def entities_extraction_pipeline(document_contents: list):
+    list_of_EntityList = list()
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_to_doc = {executor.submit(entities_extraction_with_properties, ENTITY_PROMPT_4_STD, content): content for content in document_contents}
+        
+        for future in as_completed(future_to_doc):
+            doc = future_to_doc[future]
+            try:
+                entities = future.result()
+                if entities:
+                    list_of_EntityList.append(entities)
+            except Exception as e:
+                print(f"測試文件實體抽取 Exception: {e}")
+
+    data_to_save = [t.model_dump(mode="json") for entities in list_of_EntityList for t in entities.entities]
     # with open(f"md_files\\JSON\\kgs\\doc\\doc_entities_g7_std.json", 'w', encoding="utf-8") as f:
     #     json.dump(data_to_save, f, indent=2, ensure_ascii=False)
-    # print("測試文件實體抽取完成")
+    print("測試文件實體抽取完成")
+    entity_list = EntityList(entities=data_to_save)
+    return entity_list
 
-    # ======直接開啟抽取好的KG======
-
-    # with open("md_files\\JSON\\kgs\\doc\\doc_triples_g7_sdd.json", 'r', encoding='utf-8') as f:
-    #     triple_dict = json.load(f)
-    # triple_list = TripleList(triples=triple_dict)
-
-    # ======直接開啟抽取好的 std entities======
-
-    with open("md_files\\JSON\\kgs\\doc\\doc_entities_g7_std.json", 'r', encoding='utf-8') as f:
-        entity_dict = json.load(f)
-    entity_list = EntityList(entities=entity_dict)
-
-    # ======連接US跟FR======
-
-    # actor_relations = create_actor_relationships(entity_list)
-    # triple_list = TripleList(triples=actor_relations)
+def match_fr_to_us_pipeline(entity_list: EntityList) -> EntityList:
+    actor_relations = create_actor_relationships(entity_list)
+    triple_list = TripleList(triples=actor_relations)
 
     # model = SentenceTransformer('BAAI/bge-small-zh-v1.5')
     # confident_matches, llm_matches, fr_list, actor_relations = match_us_to_fr(entity_list, model, 0.8)
@@ -571,78 +561,124 @@ if __name__ == '__main__':
     #         confident_us_entities.append(entity)
     #         seen_us_ids.add(us_id)
 
-    # llm_matches, fr_list = match_us_to_fr_v2(entity_list)
-    # seen_us_ids = set()
-    # confident_us = list()
-    # idx = dict()
-    # i = 0
+    llm_matches, fr_list = match_us_to_fr_v2(entity_list)
+    seen_us_ids = set()
+    confident_us = list()
+    idx = dict()
+    i = 0
     
-    # for match in llm_matches:
-    #     us_dict = match['us'].copy()  # 重要：要 copy，不要直接改原物件
-    #     us_id = us_dict['properties_dict']['us_id']
+    for match in llm_matches:
+        us_dict = match['us'].copy()  # 重要：要 copy，不要直接改原物件
+        us_id = us_dict['properties_dict']['us_id']
         
-    #     if us_id not in seen_us_ids:
-    #         # 把累積的 req_ids 正式加入 properties
-    #         add_req_reference_to_properties(us_dict, match['us_req_ids'])
+        if us_id not in seen_us_ids:
+            # 把累積的 req_ids 正式加入 properties
+            add_req_reference_to_properties(us_dict, match['us_req_ids'])
             
-    #         confident_us.append(us_dict)
-    #         idx[us_id] = i
-    #         seen_us_ids.add(us_id)
-    #         i += 1
-    #     else:
-    #         for req_id in match['us_req_ids']:
-    #             confident_us[idx[us_id]]['properties'].append({
-    #                 'key': 'req_reference',
-    #                 'value': req_id
-    #             })
+            confident_us.append(us_dict)
+            idx[us_id] = i
+            seen_us_ids.add(us_id)
+            i += 1
+        else:
+            for req_id in match['us_req_ids']:
+                confident_us[idx[us_id]]['properties'].append({
+                    'key': 'req_reference',
+                    'value': req_id
+                })
 
-    # for us in confident_us:
-    #     existing_refs = set()
-    #     deduplicated_props = []
+    for us in confident_us:
+        existing_refs = set()   # 移除重複的 req_reference
+        deduplicated_props = []
         
-    #     for prop in us['properties']:
-    #         if prop['key'] == 'req_reference':
-    #             if prop['value'] not in existing_refs:
-    #                 deduplicated_props.append(prop)
-    #                 existing_refs.add(prop['value'])
-    #         else:
-    #             deduplicated_props.append(prop)
+        for prop in us['properties']:
+            if prop['key'] == 'req_reference':
+                if prop['value'] not in existing_refs:
+                    deduplicated_props.append(prop)
+                    existing_refs.add(prop['value'])
+            else:
+                deduplicated_props.append(prop)
         
-    #     us['properties'] = deduplicated_props
+        us['properties'] = deduplicated_props
 
-    # confident_us_entities = [Entity(**item) for item in confident_us]
-    # fr_list_entities = [Entity(**item) for item in fr_list]
-    
+    confident_us_entities = [Entity(**item) for item in confident_us]
+    fr_list_entities = [Entity(**item) for item in fr_list]
+
     # print("向量配對的 US：")
     # for i, d in enumerate(confident_us_entities):
     #     print(f"[{i+1}/{len(confident_us_entities)}]:\n{d}")
     #     print("-"*30)
-
     
-    # data_to_upload = list()
+    data_to_upload = list()
 
     # print("LLM 配對的 US 數量：", len(llm_matches))
     # for i, d in enumerate(llm_matches):
     #     print(f"[{i+1}/{len(llm_matches)}]:\n{d}")
     #     print("-"*30)
 
-    # data_to_upload = confident_us_entities + llm_matches + fr_list_entities
-    # data_to_upload = confident_us_entities + fr_list_entities
+    # data_to_upload = confident_us_entities + llm_matches + fr_list_entities   # 向量的
+    data_to_upload = confident_us_entities + fr_list_entities   # LLM
 
-    # for i, d in enumerate(data_to_upload):
-    #     print(f"[{i+1}/{len(data_to_upload)}]:\n{d}")
-    #     print("-"*30)
+    for i, d in enumerate(data_to_upload):
+        print(f"[{i+1}/{len(data_to_upload)}]:\n{d}")
+        print("-"*30)
 
-    # entity_list = EntityList(entities=data_to_upload)
+    entity_list = EntityList(entities=data_to_upload)
 
+    # 保存
     # data_to_save = [data.model_dump() for data in data_to_upload]
-
     # with open(f"md_files\\JSON\\kgs\\doc\\doc_entities_pairs_g7_srd.json", 'w', encoding="utf-8") as f:
     #     json.dump(data_to_save, f, indent=2, ensure_ascii=False)
 
-    # with open(f"md_files\\JSON\\kgs\\doc\\doc_entities_pairs_g7_srd.json", 'r', encoding="utf-8") as f:
+    return entity_list
+
+if __name__ == '__main__':
+    source_file = "海大餐飲外送系統-測試文件(STD).md"
+    chapter_num = 11
+    doc_type = "STD"
+
+    try:
+        with open(f"md_files\\document\\{source_file}", 'r', encoding='utf-8') as input_file:
+            md_content = input_file.read()
+    except FileNotFoundError:
+        print("Error: The specified file was not found.")
+        sys.exit(0)
+ 
+    cleaned_md = clean_markdown(md_content)
+    cleaned_md = remove_specific_sections(cleaned_md)
+    md_documents = md_splitter(cleaned_md)
+
+    document_contents = list()
+    for doc in md_documents:
+        table_extracted_string = replace_tables_in_text(doc.page_content)
+        document_contents.append(table_extracted_string)
+
+    # document_content = '\n+++\n'.join(document_contents)
+    # with open(f"md_files\\document\\processed_std_doc_g7.md", 'w', encoding='utf-8') as f:
+    #     f.write(document_content)
+
+    # =====建立知識圖譜 (實體+關係)=====
+
+    triple_list = kg_construction_pipeline(document_contents)
+
+    # =====提取測試文件實體=====
+
+    entity_list = entities_extraction_pipeline(document_contents)
+
+    # ======直接開啟抽取好的KG======
+
+    # with open("md_files\\JSON\\kgs\\doc\\doc_triples_g7_sdd.json", 'r', encoding='utf-8') as f:
+    #     triple_dict = json.load(f)
+    # triple_list = TripleList(triples=triple_dict)
+
+    # ======直接開啟抽取好的 std entities======
+
+    # with open("md_files\\JSON\\kgs\\doc\\doc_entities_g7_std.json", 'r', encoding='utf-8') as f:
     #     entity_dict = json.load(f)
     # entity_list = EntityList(entities=entity_dict)
+
+    # ======連接US跟FR======
+
+    entity_list = match_fr_to_us_pipeline(entity_list)
 
     # ======上傳KG======
 
