@@ -285,11 +285,12 @@ class Neo4jImporter:
             logger.error(f"Fail to upload to Neo4j: {e}")
             return False
 
-    def run_cypher(self, cypher_query: str) -> bool:
+    def run_cypher(self, cypher_query: str) -> Result:
         try:
             with self.driver.session() as session:
-                session.run(cypher_query)
-                return True     
+                result = session.run(cypher_query)
+                records = [record["name"] for record in result]
+                return records
         except Exception as e:
                 logger.error(f"Fail to query from Neo4j: {e}")
                 return False

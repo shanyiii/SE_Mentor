@@ -458,7 +458,7 @@ def _build_retriever_pipeline(prompt_builder: ChatPromptBuilder) -> Pipeline:
 
     pipeline = Pipeline()
     pipeline.add_component("text_embedder", SentenceTransformersTextEmbedder(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"))
-    pipeline.add_component("retriever", Neo4jEmbeddingRetriever(document_store=document_store))
+    pipeline.add_component("retriever", Neo4jEmbeddingRetriever(document_store=document_store, scale_score=False))
     pipeline.add_component("ranker", ranker)
     pipeline.add_component("prompt_builder", prompt_builder)
     # pipeline.add_component("source_identifier", SourceIdentifier(CLAUDE_API_KEY))
@@ -602,7 +602,7 @@ def neo4j_generate_notes(concept: str) -> str:
     template = [
         ChatMessage.from_user(
             """
-            請根據提供的「軟體工程」教材內容，針對指定的概念，生成一份筆記供學生學習，字數限制在1500字以內。
+            請根據提供的「軟體工程」教材內容，針對指定的概念，生成一份筆記供學生學習，字數限制在2000字以內。
             筆記內容須包含：
             - 關鍵概念解說
             - 相關範例

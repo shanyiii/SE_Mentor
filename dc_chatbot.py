@@ -8,9 +8,9 @@ from discord import app_commands
 from opencc import OpenCC
 
 from quiz_generater_llm import generate_quiz_llm
-from quiz_generater_kg import get_quizes
+from quiz_generator_kg import get_quizes
 from haystack_controller import neo4j_generate_notes, neo4j_retriever, neo4j_doc_retriever, neo4j_textbook_kg_retriever
-from mongo_controller import DiagnosisQuiz, init_mongo
+from mongo_controller import LearningProfile, init_mongo
 from config import DISCORD_TOKEN
 from prompts import DCCHATBOT_WELCOME_MESSAGE
 
@@ -24,6 +24,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 GUILD_ID = discord.Object(id=1460587197227860177)
 welcomed_users = list()
+developers = [905814062850510889]
 
 cc = OpenCC('s2twp')
 
@@ -35,8 +36,9 @@ async def run_blocking(func, *args, **kwargs):
 
 # ----- Button UI -----
 class QuizView(discord.ui.View):
-    def __init__(self, questions):
+    def __init__(self, questions, user_name):
         super().__init__(timeout=60)
+        self.user_name = user_name
         self.questions = questions
         self.answer_history = ""
         self.learning_pp = list()
@@ -60,12 +62,60 @@ class QuizView(discord.ui.View):
 
         """
 
-    def split_message(self, text, limit=1900):
+    def split_message(self, text, limit=1800):
         # discord 一則訊息限制長度為 2000 字，如果生成內容太長就截成多段
         return [
             text[i:i+limit]
             for i in range(0, len(text), limit)
         ]
+    
+    async def update_profile(self, name, all_correct, concepts):
+        quiz_client = await init_mongo("TABotAI_quiz")
+        profile = await LearningProfile.find_one(LearningProfile.student_name == name)
+
+        if profile:
+            pain_points = profile.pain_points
+            learned_concepts = profile.learned
+
+            # 全對的話，concepts 就是已經學會的概念
+            if all_correct:
+                # 學習檔案中有學習弱點
+                if pain_points:
+                    # 取得原本不會但已經會的概念
+                    learned = [pp for pp in pain_points if concept in pain_points for concept in concepts]
+                    
+                    for pp in pain_points:
+                        if pp in learned:
+                            pain_points.remove(pp)  # 從學習弱點中移除已學會的概念
+
+                    learned_concepts.extend(learned)
+                    profile.pain_points = pain_points
+                    profile.learned = learned_concepts
+
+                else:
+                    learned_concepts.extend(concepts)
+                    learned_set = set(learned_concepts) # 移除重複的概念
+                    learned_concepts = list(learned_set)
+                    profile.learned = learned_concepts
+            
+
+            if pain_points == None:
+                profile.pain_points = concepts
+            
+            else:
+                for pp in concepts:
+                    if pp not in pain_points:
+                        pain_points.append(pp)
+                profile.pain_points = pain_points
+
+            profile.save()
+        
+        else:
+            await LearningProfile(
+                student_name=name,
+                studrnt_id='12345678',
+                pain_points=concepts
+            ).insert()
 
     async def get_note(self):
         # 根據不熟的概念生成筆記
@@ -79,13 +129,11 @@ class QuizView(discord.ui.View):
         # 檢查答案並記錄答錯題目
         if choice == question.answer:
             self.score += 1
-            self.answer_history = self.answer_history + f"- 第{self.index+1}題：答對\n"
-            # await interaction.response.send_message(f"正確q(≧▽≦q)答案就是 {question['options'][self.index]}", ephemeral=True)
+            self.answer_history = self.answer_history + f"- 第{self.index+1}題：✓\n    - 題目：{question.question}\n    - 正確答案：{question.options[question.answer]}\n"
         else:
             analysis = self.questions[self.index].analysis
-            self.answer_history = self.answer_history + f"- 第{self.index+1}題：答錯，{analysis}\n"
+            self.answer_history = self.answer_history + f"- 第{self.index+1}題：✕\n    - 題目：{question.question}\n    - 正確答案：{question.options[question.answer]}\n    - 你的答案：{question.options[choice]}\n    - 解析：{analysis}\n"
             self.learning_pp.append(self.questions[self.index].concept)
-            # await interaction.response.send_message("錯誤o(≧口≦)o", ephemeral=True)
         
         self.index += 1
 
@@ -100,6 +148,8 @@ class QuizView(discord.ui.View):
 
             # await interaction.response.defer(ephemeral=True)
             if len(self.learning_pp) > 0:
+                # await self.update_profile(self.user_name, self.learning_pp)
+
                 msg = await interaction.followup.send("正在生成筆記…")
                 genetared_note = await self.get_note()
                 pp = '、'.join(self.learning_pp)
@@ -155,16 +205,15 @@ def printout_questions(question_list):
 #         # 萬一生成失敗，發送錯誤訊息給使用者
 #         await interaction.followup.send(f"題目生成失敗：{e}")
 
-@bot.tree.command(name="quiz_kg", description="開始測驗")
-async def quiz_kg(interaction: discord.Interaction):
+@bot.tree.command(name="quiz", description="開始測驗")
+async def quiz(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    quiz_client = await init_mongo("TABotAI_quiz")
-
     try:
         # question_list = await generate_quiz_kg()
         question_list = await get_quizes()
         # printout_questions(question_list)
-        view = QuizView(question_list)
+        print(f"使用者【{interaction.user}】已使用診斷測驗！")
+        view = QuizView(question_list, interaction.user)
         await interaction.followup.send(view.get_question(), view=view)
     
     except Exception as e:
@@ -227,9 +276,12 @@ async def on_message(message):
     # 如果是機器人本身傳的訊息就忽略
     if message.author.bot:
         return
-    # 如果訊息不是在私人訊息 (DM 頻道) 就忽略
+    # 如果訊息不是在私人訊息 (DM 頻道) 
     if not isinstance(message.channel, discord.DMChannel):
-        return
+        if message.author.id not in developers:
+            return
+        else:
+            await message.channel.send("你好！若要使用 SE Mentor 的其他功能，請使用斜線指令")
 
     user_id = message.author.id
 
@@ -237,7 +289,7 @@ async def on_message(message):
         welcomed_users.append(user_id)
         await message.channel.send(DCCHATBOT_WELCOME_MESSAGE)
     else:
-        await message.channel.send("你好！若要使用 TABotAI 的其他功能，請使用斜線指令")
+        await message.channel.send("你好！若要使用 SE Mentor 的其他功能，請使用斜線指令")
 
     await bot.process_commands(message)
     print(welcomed_users)
