@@ -421,7 +421,7 @@ def add_metadata(md_documents: list[str], content_tags: list, type: str, **kwarg
                             "group": kwargs["group_name"],
                             "uploader": kwargs["uploader"],
                             "store_type": "vector",
-                            "tags": content_tags
+                            "tags": content_tag
                         }
                     )
                 )
@@ -434,7 +434,7 @@ def add_metadata(md_documents: list[str], content_tags: list, type: str, **kwarg
                         meta={
                             "content_type": "textbook",
                             "source_file": f"{kwargs['textbook_name']}.pdf",
-                            "tags": content_tags
+                            "tags": content_tag
                         }
                     )
                 )
@@ -482,8 +482,8 @@ def _build_retriever_pipeline(prompt_builder: ChatPromptBuilder) -> Pipeline:
 
     pipeline = Pipeline()
     pipeline.add_component("text_embedder", SentenceTransformersTextEmbedder(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"))
-    pipeline.add_component("retriever", Neo4jEmbeddingRetriever(document_store=document_store, top_k=5, scale_score=False))
-    # pipeline.add_component("ranker", ranker)
+    pipeline.add_component("retriever", Neo4jEmbeddingRetriever(document_store=document_store, scale_score=False))
+    pipeline.add_component("ranker", ranker)
     pipeline.add_component("prompt_builder", prompt_builder)
     # pipeline.add_component("source_identifier", SourceIdentifier(CLAUDE_API_KEY))
     pipeline.add_component("llm", OpenAIChatGenerator(api_key=Secret.from_env_var("OPENAI_API_KEY"), model="gpt-4o-mini"))
@@ -491,9 +491,9 @@ def _build_retriever_pipeline(prompt_builder: ChatPromptBuilder) -> Pipeline:
 
     # pipeline.connect("source_identifier.filters", "retriever.filters")
     pipeline.connect("text_embedder.embedding", "retriever.query_embedding")
-    # pipeline.connect("retriever.documents", "ranker.documents")
-    # pipeline.connect("ranker.documents", "prompt_builder.documents")
-    pipeline.connect("retriever.documents", "prompt_builder.documents")
+    pipeline.connect("retriever.documents", "ranker.documents")
+    pipeline.connect("ranker.documents", "prompt_builder.documents")
+    # pipeline.connect("retriever.documents", "prompt_builder.documents")
     pipeline.connect("prompt_builder.prompt", "llm.messages")
 
     return pipeline
@@ -611,9 +611,9 @@ def neo4j_retriever(question: str, chapter: str = None, group: str = None) -> di
             # "source_identifier": {"user_input": question},
             "text_embedder": {"text": question}, 
             "prompt_builder": {"question": question},
-            # "ranker": {"query": question},
+            "ranker": {"query": question},
             "retriever": {
-                # "top_k": TASK_CONFIGS["retriever"]["top_k"],
+                "top_k": TASK_CONFIGS["retriever"]["top_k"],
                 "filters": filters
             },
             # "llm":{"generation_kwargs":{"max_tokens": TASK_CONFIGS["retriever"]["max_tokens"]}}
@@ -633,7 +633,7 @@ def neo4j_generate_notes(concept: str) -> str:
             - 關鍵概念解說
             - 相關範例
             - 重點整理
-            筆記內容必須清楚易懂，必要時可使用表格、引用等方式呈現。
+            筆記內容必須清楚易懂，請使用 Markdown 格式，必要時可使用表格、引用等方式呈現。
             僅輸出筆記內容，並使用台灣繁體中文。
 
             Context:

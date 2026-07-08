@@ -37,9 +37,9 @@ async def run_blocking(func, *args, **kwargs):
 
 # ----- Button UI -----
 class QuizView(discord.ui.View):
-    def __init__(self, questions: list, user_name: str):
+    def __init__(self, questions: list, user_id: int):
         super().__init__(timeout=180)
-        self.user_name = user_name
+        self.user_id = user_id
         self.questions = questions
         self.answer_history = ""
         self.learning_pp = list()
@@ -64,15 +64,29 @@ class QuizView(discord.ui.View):
 
         """
 
-    def split_message(self, text: str, limit: int = 1800):
-        # discord 一則訊息限制長度為 2000 字，如果生成內容太長就截成多段
+    def split_message(self, text: str, limit: int = 1500):
+        # print("original note:\n", text)
+        # if len(text) < limit:
+        #     return [text]
+        # # discord 一則訊息限制長度為 2000 字，如果生成內容太長就截成多段
+        # split_by_header = file_processor.md_splitter(text)
+        # temp_text = ""
+        # final_text = list()
+        # for header_content in split_by_header:
+        #     buffer_text = temp_text + "\n" + header_content.page_content
+        #     if len(buffer_text) > limit:
+        #         final_text.append(temp_text)
+        #         temp_text = ""
+        #     temp_text = temp_text + "\n" + header_content.page_content
+        # return final_text
         return [
             text[i:i+limit]
             for i in range(0, len(text), limit)
         ]
     
-    async def update_profile(self, name: str, all_correct: bool, concepts: list):
-        profile = await LearningProfile.find_one(LearningProfile.student_name == name)
+    async def update_profile(self, user_id: int, all_correct: bool, concepts: list):
+        student = await StudentProfile.find_one(StudentProfile.discord_id == user_id)
+        profile = await LearningProfile.find_one(LearningProfile.student.discord_id == user_id, fetch_links=True)
 
         if profile:
             pain_points = profile.pain_points
@@ -85,23 +99,21 @@ class QuizView(discord.ui.View):
                 if pain_points:
                     print("原本的弱點：", pain_points)
                     # 取得原本不會但已經會的概念
-                    learned = [pp for pp in pain_points if concept in pain_points for concept in concepts]
+                    learned = [c for c in concepts if c in pain_points]
                     print("原本不會但已經會：", learned)
-                    
-                    for pp in pain_points:
-                        if pp in learned:
-                            pain_points.remove(pp)  # 從學習弱點中移除已學會的概念
+
+                    # 從學習弱點中移除已學會的概念
+                    pain_points = [pp for pp in pain_points if pp not in learned]
 
                     print("修正後的弱點：", pain_points)
                     learned_concepts.extend(learned)
                     profile.pain_points = pain_points
-                    profile.learned = learned_concepts
+                    profile.learned = list(set(learned_concepts))
 
                 else:
                     print("原本已經會的：", learned_concepts)
                     learned_concepts.extend(concepts)
-                    learned_set = set(learned_concepts) # 移除重複的概念
-                    learned_concepts = list(learned_set)
+                    learned_concepts = list(set(learned_concepts)) # 移除重複的概念
                     print("更新後的已學會：", learned_concepts)
                     profile.learned = learned_concepts
             
@@ -111,8 +123,7 @@ class QuizView(discord.ui.View):
                 if pain_points:
                     print("原本的弱點：", pain_points)
                     pain_points.extend(concepts)
-                    pp_set = set(pain_points)
-                    pain_points = list(pp_set)
+                    pain_points = list(set(pain_points))
                     profile.pain_points = pain_points
                 
                 else:
@@ -123,12 +134,12 @@ class QuizView(discord.ui.View):
         else:
             if all_correct:
                 await LearningProfile(
-                    student_name=name,
+                    student=student,
                     learned=concepts
                 ).insert()
             else:
                 await LearningProfile(
-                    student_name=name,
+                    student=student,
                     pain_points=concepts
                 ).insert()
 
@@ -164,19 +175,21 @@ class QuizView(discord.ui.View):
 
             # await interaction.response.defer(ephemeral=True)
             if len(self.learning_pp) > 0:
-                await self.update_profile(self.user_name, False, self.learning_pp)
+                await self.update_profile(self.user_id, False, self.learning_pp)
 
                 msg = await interaction.followup.send("正在生成筆記…")
                 genetared_note = await self.get_note()
                 pp = '、'.join(self.learning_pp)
-                note = f"你可能對這些概念比較弱：{pp}\n以下是你的專屬筆記！\n\n{cc.convert(genetared_note)}"
+                note = f"你可能對這些概念比較弱：{pp}\n以下是你的專屬筆記！\n\n{genetared_note}"
                 # await msg.edit(content=note)
-                chunks = self.split_message(note)   # 切割內容
+                chunks = self.split_message(note)
+
                 await msg.edit(content=chunks[0])
+
                 for chunk in chunks[1:]:
                     await interaction.followup.send(chunk)
             else:
-                await self.update_profile(self.user_name, True, self.learned_concepts)
+                await self.update_profile(self.user_id, True, self.learned_concepts)
         else:
             # 下一題
             await interaction.response.edit_message(
@@ -275,11 +288,16 @@ def build_knowledge_graph(source_file: str, doc_type: str, group: str, uploader:
 async def quiz(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     try:
-        # question_list = await generate_quiz_kg()
+        student = await StudentProfile.find_one(StudentProfile.discord_id == interaction.user.id)
+        if not student:
+            await StudentProfile(
+                discord_id=interaction.user.id,
+                name=interaction.user.name
+            ).insert()
+
         question_list = await quiz_generator_kg.get_quizes()
-        # printout_questions(question_list)
         print(f"使用者【{interaction.user.name}】已使用診斷測驗！")
-        view = QuizView(question_list, interaction.user.name)
+        view = QuizView(question_list, interaction.user.id)
         await interaction.followup.send(view.get_question(), view=view)
     
     except Exception as e:

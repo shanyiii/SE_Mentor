@@ -18,19 +18,20 @@ class DiagnosisQuiz(Document):
     name = "diagnosis_quiz"
 
 class StudentProfile(Document):
-    """學生基本資訊"""
-    discord_id: int
-    name: str
-    group: str = None
-    joined_at: datetime = Field(default_factory=datetime.now)
-    
-    class Settings:
-        name = "student_profiles"
+  """學生基本資訊"""
+  discord_id: int
+  name: str
+  group: str = None
+  joined_at: datetime = Field(default_factory=datetime.now)
+  
+  class Settings:
+      name = "student_profiles"
 
 class LearningProfile(Document):
   student: Link[StudentProfile]
   pain_points: list[str] = []
   learned: list[str] = []
+  created_at: datetime = Field(default_factory=datetime.now)
 
   class Settings:
     name = "learning_profiles"
