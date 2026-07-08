@@ -37,7 +37,7 @@ def pdf2md(file_path, chapter):
     with open(output_name, "w", encoding="utf-8") as f:
         f.write(markdown_output)
 
-def md_splitter(md_content):
+def md_splitter(md_content: str, with_recursive: bool = False):
     headers_to_split_on = [  
         ("#", "Header 1"),  
         ("##", "Header 2"),  
@@ -50,17 +50,12 @@ def md_splitter(md_content):
     # Split markdown_document by headers and store in md_header_splits
     md_header_splits = markdown_splitter.split_text(md_content)
 
-    # recursive_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
-    # final_chunks = recursive_splitter.split_documents(md_header_splits)
-
-    # Print the split results
-    # for doc in final_chunks:
-    #     print(doc.page_content)
-    #     print(doc.metadata)
-    #     print("=" * 30)
+    if with_recursive:
+        recursive_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        final_chunks = recursive_splitter.split_documents(md_header_splits)
+        return final_chunks
     
     return md_header_splits
-    # return final_chunks
 
 def clean_markdown(text):
     # 移除圖片語法: ![替代文字](圖片連結)
@@ -80,9 +75,7 @@ def remove_specific_sections(text):
         r'(^##\s*版次變更記錄.*?)(?=^##\s|^#\s|\Z)', 
         r'(^##\s*目錄.*?)(?=^##\s|^#\s|\Z)',
         r'(^##\s*\d\.\s測試工作指派與時程.*?)(?=^##\s|^#\s|\Z)',
-        r'(^##\s*\d\.\s測試結果與分析.*?)(?=^##\s|^#\s|\Z)',
         r'(^##\s*\d\.\s測試環境.*?)(?=^##\s|^#\s|\Z)',
-        r'(^##\s*\d\.\s追溯表.*?)(?=^##\s|^#\s|\Z)',
         r'(^##\s*\d\.\s測試目的與接受準則.*?)(?=^##\s|^#\s|\Z)'
     ]
 
@@ -156,6 +149,7 @@ def parse_markdown_table(table: str) -> List[Dict[str, str]]:
             # 如果列數與表頭不符，進行調整
             if len(cells) != len(headers):
                 print(f"警告：行的列數 ({len(cells)}) 與表頭列數 ({len(headers)}) 不符")
+                print(line)
             
             # 建立字典，缺失的欄位設為空字符串
             row_dict = {}

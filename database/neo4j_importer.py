@@ -127,7 +127,7 @@ class Neo4jImporter:
             logger.error(f"Fail to upload to Neo4j: {e}")
             return False
 
-    def upload_doc_triples(self, triple_list: TripleList, source_file: str, doc_type: str, group: str) -> bool:
+    def upload_doc_triples(self, triple_list: TripleList, source_file: str, doc_type: str, group: str, uploader: str) -> bool:
         try:
             with self.driver.session() as session:
                 labels = ["Requirement", "Service", "SystemComponent", "API", "TestCase", "Actor", "General", "Technology", "Methodology", "Concept"]
@@ -168,13 +168,13 @@ class Neo4jImporter:
                 UNWIND $batch AS row
                 CALL (row) {
                     WITH row
-                    CALL apoc.merge.node([row.subject.label], {name: row.subject.name, group: $group}, {}, {}) YIELD node AS sNode
+                    CALL apoc.merge.node([row.subject.label], {name: row.subject.name, group: $group, uploader: $uploader}, {}, {}) YIELD node AS sNode
                     SET sNode += row.subject.props_dict
                     SET sNode.source_files = apoc.coll.toSet(coalesce(sNode.source_files, []) + $source_file)
                     SET sNode.doc_type = apoc.coll.toSet(coalesce(sNode.doc_type, []) + $doc_type)
 
                     WITH sNode, row
-                    CALL apoc.merge.node([row.object.label], {name: row.object.name, group: $group}, {}, {}) YIELD node AS oNode
+                    CALL apoc.merge.node([row.object.label], {name: row.object.name, group: $group, uploader: $uploader}, {}, {}) YIELD node AS oNode
                     SET oNode += row.object.props_dict
                     SET oNode.source_files = apoc.coll.toSet(coalesce(oNode.source_files, []) + $source_file)
                     SET oNode.doc_type = apoc.coll.toSet(coalesce(oNode.doc_type, []) + $doc_type)
@@ -187,7 +187,7 @@ class Neo4jImporter:
                 } IN TRANSACTIONS
                 RETURN sum(relCount)
                 """
-                session.run(cypher_query, batch=data_to_upload, source_file=source_file, group=group, doc_type=doc_type)
+                session.run(cypher_query, batch=data_to_upload, source_file=source_file, group=group, uploader=uploader, doc_type=doc_type)
 
                 # print(f"成功上傳 {len(triple_list.triples)} 條關係。")
                 return True
@@ -196,7 +196,7 @@ class Neo4jImporter:
             logger.error(f"Fail to upload to Neo4j: {e}")
             return False
 
-    def upload_entities(self, entity_list: EntityList, source_file: str, doc_type: str, group: str) -> bool:
+    def upload_entities(self, entity_list: EntityList, source_file: str, doc_type: str, group: str, uploader: str) -> bool:
         try:
             with self.driver.session() as session:
                 labels = ["Requirement", "Service", "SystemComponent", "API", "TestCase", "Actor", "General", "Technology", "Methodology", "Concept"]
@@ -227,7 +227,7 @@ class Neo4jImporter:
                 UNWIND $batch AS row
                 CALL (row) {
                     WITH row
-                    CALL apoc.merge.node([row.label], {name: row.name, group: $group}, {}, {}) YIELD node AS node
+                    CALL apoc.merge.node([row.label], {name: row.name, group: $group, uploader: $uploader}, {}, {}) YIELD node AS node
                     SET node += row.props_dict
                     SET node.source_files = apoc.coll.toSet(coalesce(node.source_files, []) + $source_file)
                     SET node.doc_type = apoc.coll.toSet(coalesce(node.doc_type, []) + $doc_type)
@@ -236,7 +236,7 @@ class Neo4jImporter:
                 } IN TRANSACTIONS
                 RETURN nCount
                 """
-                session.run(cypher_query, batch=data_to_upload, source_file=source_file, group=group, doc_type=doc_type)
+                session.run(cypher_query, batch=data_to_upload, source_file=source_file, group=group, uploader=uploader, doc_type=doc_type)
 
                 # print(f"成功上傳 {len(entity_list.triples)} 條關係。")
                 return True
@@ -268,14 +268,24 @@ class Neo4jImporter:
         return props_dict
 
     def link_references_to_requirements(self, label: str, doc_type: str, group: str, rel_type: str) -> bool:
-        cypher = f"""
-        MATCH (n:{label})
-        WHERE n.group = $group AND $doc_type in n.doc_type AND n.req_reference IS NOT NULL
-        UNWIND n.req_reference AS req_id
-        MATCH (r:Requirement {{req_id: req_id, group: $group}})
-        MERGE (n)-[rel:{rel_type}]->(r)
-        RETURN count(rel) AS linked
-        """
+        if doc_type == "SRD":
+            cypher = f"""
+            MATCH (n:{label})
+            WHERE n.group = $group AND $doc_type in n.doc_type AND n.req_reference IS NOT NULL
+            UNWIND n.req_reference AS req_id
+            MATCH (r:Requirement {{req_id: req_id, group: $group}})
+            MERGE (r)-[rel:{rel_type}]->(n)
+            RETURN count(rel) AS linked
+            """
+        else:
+            cypher = f"""
+                MATCH (n:{label})
+                WHERE n.group = $group AND $doc_type in n.doc_type AND n.req_reference IS NOT NULL
+                UNWIND n.req_reference AS req_id
+                MATCH (r:Requirement {{req_id: req_id, group: $group}})
+                MERGE (n)-[rel:{rel_type}]->(r)
+                RETURN count(rel) AS linked
+            """
         try:
             with self.driver.session() as session:
                 result = session.run(cypher, doc_type=doc_type, group = group).single()

@@ -1,5 +1,8 @@
-import os, asyncio, json, re
+import os, asyncio, json, re, sys
 from typing import List, Dict, Any
+from pathlib import Path
+
+import inspect
 
 import anthropic
 from opencc import OpenCC
@@ -20,7 +23,8 @@ from neo4j import GraphDatabase
 
 from sentence_transformers import SentenceTransformer
 
-from file_processor import md_splitter, clean_markdown, remove_specific_sections, replace_tables_in_text
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from utils import file_processor
 from config import OPENAI_API_KEY, NEO4J_PASSWORD, CLAUDE_API_KEY, GEMINI_API_KEY
 from common import TASK_CONFIGS
 
@@ -404,23 +408,43 @@ def upload_to_neo4j(documents: list[Document]):
     print(document_store.count_documents())
 
 # 替 chunk 加上 metadata 並轉為 Document 物件
-def add_metadata(md_documents: list[str], metadata: dict) -> list[Document]:
+def add_metadata(md_documents: list[str], content_tags: list, type: str, **kwargs) -> list[Document]:
     documents = list()
-    # for doc, content_tag in zip(md_documents, content_tags):
-    #     cleaned_md = clean_markdown(doc.page_content)
+    if type == "doc":
+        for doc, content_tag in zip(md_documents, content_tags):
+            if doc:
+                documents.append(
+                    Document(
+                        content=f"{content_tag}\n\n{doc}",
+                        meta={
+                            "doc_type": kwargs["doc_type"],
+                            "group": kwargs["group_name"],
+                            "uploader": kwargs["uploader"],
+                            "store_type": "vector",
+                            "tags": content_tags
+                        }
+                    )
+                )
+    elif type == "textbook":
+        for doc, content_tag in zip(md_documents, content_tags):
+            if doc:
+                documents.append(
+                    Document(
+                        content=f"{content_tag}\n\n{doc}",
+                        meta={
+                            "content_type": "textbook",
+                            "source_file": f"{kwargs['textbook_name']}.pdf",
+                            "tags": content_tags
+                        }
+                    )
+                )
+    # for doc in md_documents:
     #     documents.append(
     #         Document(
-    #             content=f"{content_tag}\n\n{cleaned_md}",
+    #             content=doc,
     #             meta=metadata
     #         )
     #     )
-    for doc in md_documents:
-        documents.append(
-            Document(
-                content=doc,
-                meta=metadata
-            )
-        )
         # doc.meta["page"]
     return documents
 
@@ -458,8 +482,8 @@ def _build_retriever_pipeline(prompt_builder: ChatPromptBuilder) -> Pipeline:
 
     pipeline = Pipeline()
     pipeline.add_component("text_embedder", SentenceTransformersTextEmbedder(model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"))
-    pipeline.add_component("retriever", Neo4jEmbeddingRetriever(document_store=document_store, scale_score=False))
-    pipeline.add_component("ranker", ranker)
+    pipeline.add_component("retriever", Neo4jEmbeddingRetriever(document_store=document_store, top_k=5, scale_score=False))
+    # pipeline.add_component("ranker", ranker)
     pipeline.add_component("prompt_builder", prompt_builder)
     # pipeline.add_component("source_identifier", SourceIdentifier(CLAUDE_API_KEY))
     pipeline.add_component("llm", OpenAIChatGenerator(api_key=Secret.from_env_var("OPENAI_API_KEY"), model="gpt-4o-mini"))
@@ -467,9 +491,9 @@ def _build_retriever_pipeline(prompt_builder: ChatPromptBuilder) -> Pipeline:
 
     # pipeline.connect("source_identifier.filters", "retriever.filters")
     pipeline.connect("text_embedder.embedding", "retriever.query_embedding")
-    pipeline.connect("retriever.documents", "ranker.documents")
-    pipeline.connect("ranker.documents", "prompt_builder.documents")
-    # pipeline.connect("prompt_builder.prompt", "llm.messages")
+    # pipeline.connect("retriever.documents", "ranker.documents")
+    # pipeline.connect("ranker.documents", "prompt_builder.documents")
+    pipeline.connect("retriever.documents", "prompt_builder.documents")
     pipeline.connect("prompt_builder.prompt", "llm.messages")
 
     return pipeline
@@ -501,7 +525,7 @@ def _build_kg_pipeline(kw_prompt_builder: PromptBuilder) -> Pipeline:
     【學生問題】
     {{question}}
 
-    請基於教學資料回答，控制在 5-7 句話，總字數不超過 500 字。
+    請基於教學資料回答，總字數不超過 1000 字。
     如果資料不足，請說「資料不足無法完整回答」。
     答案：
     """
@@ -562,7 +586,9 @@ def neo4j_retriever(question: str, chapter: str = None, group: str = None) -> di
     response_template = [
         ChatMessage.from_user(
             """
-            你是一個「軟體工程課程助教」請根據提供的資訊用台灣繁體中文回答問題，並僅輸出你的回答。請勿直接摘要資訊內容，而是針對問題僅採用必要資訊來回答，並控制在5到7句話，總字數不超過500字。如果問題與「軟體工程」無關，或是答案無法從資訊得知的話，請不要擅自生成答案。
+            你是一個「軟體工程課程助教」請根據提供的資訊用台灣繁體中文回答問題，並僅輸出你的回答。請勿直接摘要資訊內容，而是針對問題僅採用必要資訊來回答，總字數不超過1000字。
+            如果問題與「軟體工程」或是「軟體專案開發」無關，請說「我無法回答與軟體工程無關的問題」。
+            如果資料不足，請說「資料不足無法完整回答」。
 
             Context:
             {% for document in documents %}
@@ -585,9 +611,9 @@ def neo4j_retriever(question: str, chapter: str = None, group: str = None) -> di
             # "source_identifier": {"user_input": question},
             "text_embedder": {"text": question}, 
             "prompt_builder": {"question": question},
-            "ranker": {"query": question},
+            # "ranker": {"query": question},
             "retriever": {
-                "top_k": TASK_CONFIGS["retriever"]["top_k"],
+                # "top_k": TASK_CONFIGS["retriever"]["top_k"],
                 "filters": filters
             },
             # "llm":{"generation_kwargs":{"max_tokens": TASK_CONFIGS["retriever"]["max_tokens"]}}
@@ -727,7 +753,7 @@ def neo4j_doc_retriever(question: str, group_id: str) -> str:
     答案（只輸出實體名稱）：
     """
 
-    entity_index = build_entity_index(uri="bolt://localhost:7687", user="neo4j", password=NEO4J_PASSWORD, group_id="第七組")
+    entity_index = build_entity_index(uri="bolt://localhost:7687", user="neo4j", password=NEO4J_PASSWORD, group_id=group_id)
     entity_list_text = format_entity_list(entity_index)
     keyword_prompt_template = keyword_prompt_template.replace(
         "(entity_list)", entity_list_text
@@ -742,8 +768,15 @@ def neo4j_doc_retriever(question: str, group_id: str) -> str:
         },
         include_outputs_from=["desc_reasoner", "answer_llm"]
     )
-    return result
-    # return result["answer_llm"]["replies"][0]
+
+    if "資料不足" in result["answer_llm"]["replies"][0]:
+        print(f"> 問題：{question}\n> 由於知識圖譜資料不足以回答問題，啟用備案向量檢索生成")
+        vector_res = neo4j_retriever(question=question, group=group_id)
+        print(vector_res["retriever"])
+        return vector_res["llm"]["replies"][0]._content[0].text
+    
+    # return result
+    return result["answer_llm"]["replies"][0]
 
 async def main():
     # res = await neo4j_retriever("請問有哪些git指令可以做分支合併？")
@@ -755,12 +788,12 @@ async def main():
     print("="*30)
     print(res["llm"]["replies"][0]._content[0].text)
 
-async def batch_tags(md_documents):
+async def batch_tags(md_documents, doc_type):
     chunks = [d.page_content for d in md_documents]
     chunk_dict = json.dumps([{"id": i, "content": c} for i, c in enumerate(chunks)])
 
     prompt = f"""
-    以下是 {len(md_documents)} 個軟體工程教材段落，請為每個段落生成 2-3 個關鍵字，並以 JSON 格式回傳，key 是段落編號，value 是關鍵字，以python list呈現。
+    以下是 {len(md_documents)} 個{doc_type}段落，請為每個段落生成 2-3 個關鍵字，並以 JSON 格式回傳，key 是段落編號，value 是關鍵字，以python list呈現。
     
     【輸出格式範例】
     1:[版本控制, git 指令]
@@ -771,7 +804,7 @@ async def batch_tags(md_documents):
 
     client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
     res = client.beta.messages.create(
-            max_tokens=400,
+            max_tokens=4000,
             messages=[
                 {"role":"user", "content":prompt}
             ],
@@ -782,13 +815,13 @@ async def batch_tags(md_documents):
         output = re.sub(r'```', '', res.content[0].text)
         output = re.sub(r'json', '', output)
         result = json.loads(output)
+        return result
     except Exception as e:
         print(e)
         print("="*30)
         print(chunk_dict)
         print(output)
     # print(result)
-    return result
 
 async def upload_2_vectordb(chapter, textbook_name):
     try:
@@ -798,8 +831,8 @@ async def upload_2_vectordb(chapter, textbook_name):
         print("Error: The specified file was not found.")
         return
 
-    md_documents = md_splitter(md_content)
-    tags_w_id = await batch_tags(md_documents)
+    md_documents = file_processor.md_splitter(md_content, True)
+    tags_w_id = await batch_tags(md_documents, "軟體工程教材")
     chapter_tags = {
         "chapter": textbook_name,
         "tags": tags_w_id
@@ -816,11 +849,11 @@ async def upload_2_vectordb(chapter, textbook_name):
         "source_file": f"{textbook_name}.pdf",
         "tags": content_tags
     }
-    documents = add_metadata(md_documents, metadata)
+    documents = add_metadata(md_documents, content_tags, "textbook", textbook_name=textbook_name)
 
     upload_to_neo4j(documents)
 
-async def upload_doc_2_vectordb(file_path, doc_type, group_name):
+async def upload_doc_2_vectordb(file_path, doc_type, group_name, uploader):
     try:
         with open(file_path, 'r', encoding='utf-8') as input_file:
             md_content = input_file.read()
@@ -828,21 +861,27 @@ async def upload_doc_2_vectordb(file_path, doc_type, group_name):
         print("Error: The specified file was not found.")
         return
 
-    cleaned_md = clean_markdown(md_content)
-    cleaned_md = remove_specific_sections(cleaned_md)
-    md_documents = md_splitter(cleaned_md)
+    cleaned_md = file_processor.clean_markdown(md_content)
+    # cleaned_md = file_processor.remove_specific_sections(cleaned_md)
+    md_documents = file_processor.md_splitter(cleaned_md, True)
+    print(len(md_documents))
+    tags_w_id = await batch_tags(md_documents, "軟體專案開發文件")
+
+    doc_tags = {
+        "file": file_path,
+        "tags": tags_w_id
+    }
+    with open(f"md_files\\groups\\{group_name}\\content_tags.json", 'w', encoding="utf-8") as f:
+        json.dump(doc_tags, f, indent=2, ensure_ascii=False)
+
+    content_tags = [tags_w_id[str(i)] for i in range(0, len(md_documents))]
+
     document_contents = list()
     for doc in md_documents:
-        table_extracted_string = replace_tables_in_text(doc.page_content)
+        table_extracted_string = file_processor.replace_tables_in_text(doc.page_content)
         document_contents.append(table_extracted_string)
 
-    metadata = {
-        "doc_type": doc_type,
-        "group": group_name,
-        "store_type": "vector"
-    }
-
-    documents = add_metadata(document_contents, metadata)
+    documents = add_metadata(document_contents, content_tags, "doc", doc_type=doc_type, group_name=group_name, uploader=uploader)
     upload_to_neo4j(documents)
 
 async def filter_retrieval_test():
@@ -868,7 +907,7 @@ if __name__ == '__main__':
 
     # asyncio.run(filter_retrieval_test())
 
-    question = "請告訴我編輯餐廳的API的輸入是什麼"
+    question = "Flutter App 應支援哪些 Android 版本？"
     # res = neo4j_retriever(question)
     # for d in  res["retriever"]["documents"]:
     #     print(d.content)
@@ -876,14 +915,21 @@ if __name__ == '__main__':
     # print(res["llm"]["replies"][0]._content[0].text)
     # print(res["llm"]["replies"][0])
 
-    # res = neo4j_textbook_kg_retriever(question
-    res = neo4j_doc_retriever(question, "第七組")
-    print(res["desc_reasoner"]["knowledge_base"])
-    print("="*30)
-    print(res["answer_llm"]["replies"][0])
+    # res = neo4j_textbook_kg_retriever(question)
+    # res = neo4j_doc_retriever(question, "測試組")
+    # print(res["desc_reasoner"]["knowledge_base"])
+    # print("="*30)
+    # print(res["answer_llm"]["replies"][0])
 
-    # upload_to_vector_db(["C:\\Users\\shanyiii\\Desktop\\mine\\1141軟體工程\\[06]版本控制.pdf"])
+    vector_res = neo4j_retriever(question=question, group="測試組")
+    for doc in vector_res["retriever"]["documents"]:
+        print(doc.content)
+        print("-"*30)
+    print(vector_res["llm"]["replies"][0]._content[0].text)
 
-    # asyncio.run(upload_doc_2_vectordb("md_files\\document\\海大餐飲外送系統-需求文件(SRD).md", "SRD", "第七組"))
+
+    # print(inspect.signature(Neo4jEmbeddingRetriever.run))
+
+    # asyncio.run(upload_doc_2_vectordb("md_files\\document\\ghote_SRD.md", "SRD", "測試組", ".shanyiii"))
 
     # asyncio.run(main())

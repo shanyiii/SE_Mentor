@@ -2,8 +2,8 @@ import os, ast, asyncio, random
 import inspect
 
 from pydantic import BaseModel
-from neo4j_importer import Neo4jImporter
-from mongo_controller import DiagnosisQuiz, init_mongo, LearningProfile
+from database.neo4j_importer import Neo4jImporter
+from database.mongo_controller import DiagnosisQuiz, init_mongo, LearningProfile
 from config import NEO4J_PASSWORD, OPENAI_API_KEY
 from common import NEO4J_URI
 
@@ -145,7 +145,7 @@ async def upload_quiz_to_mongo():
 
     await DiagnosisQuiz.insert_many(diagnosis_quizes)
 
-async def get_quizes():
+async def get_quizes() -> list:
     quiz_client = await init_mongo("TABotAI_quiz")
     question_list = list()
 

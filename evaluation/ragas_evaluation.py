@@ -12,7 +12,7 @@ from ragas.embeddings.base import embedding_factory
 from ragas.metrics.collections import ContextPrecision, ContextRecall, Faithfulness, AnswerRelevancy, AnswerAccuracy, AnswerCorrectness
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
-from haystack_controller import neo4j_retriever, neo4j_textbook_kg_retriever
+from services.haystack_service import neo4j_retriever, neo4j_textbook_kg_retriever
 from ragas_dataset import dataset
 from config import CLAUDE_API_KEY, OPENAI_API_KEY
 
@@ -177,19 +177,12 @@ if __name__ == '__main__':
     # }]
 
     result_list = list()
-<<<<<<< HEAD
     for i, data in enumerate(dataset, 1):
         print(f"[{i}/{len(dataset)}] 執行問題：{data['question']}")
         try:
             # contexts, response = asyncio.run(get_retrieved_contexts(neo4j_textbook_kg_retriever, question=data["question"], component_name="desc_reasoner", document_name="knowledge_base"))
             # contexts, response = asyncio.run(get_retrieved_contexts(neo4j_retriever, question=data["question"], component_name="retriever", document_name="documents", chapter=data["chapter"]))
             contexts, response = asyncio.run(llm_retrieved_context(data["question"], data["chapter"]))
-=======
-    for data in dataset:
-        contexts, response = asyncio.run(get_retrieved_contexts(neo4j_textbook_kg_retriever, question=data["question"], component_name="desc_reasoner", document_name="knowledge_base"))
-        # contexts, response = asyncio.run(get_retrieved_contexts(neo4j_retriever, question=data["question"], component_name="retriever", document_name="documents", chapter=data["chapter"]))
-        # contexts, response = asyncio.run(llm_retrieved_context(data["question"], data["chapter"]))
->>>>>>> feat/structured_collaboration
 
             context_precision_score = asyncio.run(context_precision(data["question"], data["reference"], contexts))
             context_recall_score = asyncio.run(context_recall(data["question"], data["reference"], contexts))
