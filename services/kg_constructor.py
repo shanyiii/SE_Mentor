@@ -1,8 +1,7 @@
-import re, ast, time, random, json, gc, sys
+import re, ast, time, random, json, gc, sys, argparse
 import numpy as np
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 import anthropic
 
@@ -10,7 +9,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from utils import file_processor
 from database.neo4j_importer import Neo4jImporter, TripleList, EntityList, Entity
 from common import NEO4J_URI
-from config import NEO4J_PASSWORD, GEMINI_API_KEY, CLAUDE_API_KEY
+from config import NEO4J_PASSWORD, CLAUDE_API_KEY
 import prompts 
 
 class KGConstructor:
@@ -19,14 +18,6 @@ class KGConstructor:
 
     def entities_extraction(self, prompt: str, user_input: str) -> list:
         """LLM 提取實體 (SDD)"""
-
-        # res = client.chat.completions.create(
-        #     model="gpt-4o",
-        #     messages=[
-        #         {"role":"system", "content":prompt},
-        #         {"role":"user", "content":user_input}
-        #     ]
-        # )
 
         res = self.client.beta.messages.create(
             max_tokens=2500,
@@ -37,15 +28,7 @@ class KGConstructor:
             model="claude-sonnet-4-6",
         )
 
-        # res = client.models.generate_content(
-        #     model="gemini-2.0-flash",
-        #     config=types.GenerateContentConfig(system_instruction=prompt),
-        #     contents=user_input
-        # )
-
-        # entities = re.sub(r'[\r\n]', '', res.choices[0].message.content)  #gpt
-        entities = re.sub(r'[\r\n]', '', res.content[0].text)   # claude
-        # entities = re.sub(r'[\r\n]', '', res.text)    # gemini
+        entities = re.sub(r'[\r\n]', '', res.content[0].text)
         # print(entities)
 
         match = re.search(r"\[.*?\]", entities)
@@ -79,15 +62,6 @@ class KGConstructor:
         </article>
         """
 
-        # res = client.responses.parse(
-        #     model="gpt-4o",
-        #     input=[
-        #         {"role":"system", "content":prompt},
-        #         {"role":"user", "content":input_data}
-        #     ],
-        #     text_format=TripleList
-        # )
-
         res = self.client.messages.parse(
             model="claude-sonnet-4-6",
             max_tokens=9000,
@@ -98,24 +72,7 @@ class KGConstructor:
             output_format=TripleList,
         )
 
-        # res = client.models.generate_content(
-        #     model="gemini-2.0-flash",
-        #     config=types.GenerateContentConfig(
-        #         system_instruction=prompt,
-        #         response_mime_type="application/json",
-        #         response_schema=TripleList,
-        #     ),
-        #     contents=input_data
-        # )
-        # print(res.output_parsed)
-        # print(res.text)
-
-        # examined_triples = self.self_kg_examination(prompts.KG_EXAMINATION_PROMPT, user_input, res.parsed_output)
-        # return examined_triples
-
-        # return res.output_parsed  #gpt
-        return res.parsed_output    # claude
-        # return res.parsed     # gemini
+        return res.parsed_output
 
     def entities_extraction_with_properties(self, prompt: str, user_input: str) -> EntityList:
         """提取包含屬性的實體"""
@@ -139,64 +96,7 @@ class KGConstructor:
             output_format=EntityList,
         )
 
-        # examined_entities = self_entity_examination(ENTITY_EXAMINATION_PROMPT, user_input, res.parsed_output)
-
-        return res.parsed_output    # claude
-        # return examined_entities
-
-    def self_entity_examination(self, prompt, doc_content, entities):
-        input_data = f"""
-        文章內容如下：
-
-        <article>
-        {doc_content}
-        </article>
-
-        實體列表如下：
-
-        <entities>
-        {entities}
-        </entities>
-        """
-
-        res = self.client.messages.parse(
-            model="claude-sonnet-4-6",
-            max_tokens=9000,
-            messages=[
-                {"role":"user", "content":prompt},
-                {"role":"user", "content":input_data}
-            ],
-            output_format=EntityList,
-        )
-
-        return res.parsed_output    # claude
-
-    def self_kg_examination(self, prompt, doc_content, triples):
-        input_data = f"""
-        文章內容如下：
-
-        <article>
-        {doc_content}
-        </article>
-
-        三元組如下：
-
-        <triples>
-        {triples}
-        </triples>
-        """
-
-        res = self.client.messages.parse(
-            model="claude-sonnet-4-6",
-            max_tokens=9000,
-            messages=[
-                {"role":"user", "content":prompt},
-                {"role":"user", "content":input_data}
-            ],
-            output_format=TripleList,
-        )
-
-        return res.parsed_output    # claude
+        return res.parsed_output 
 
     def match_fr_and_us_llm(self, case: dict, prompt: str, fr2us: bool) -> EntityList:
         """配對功能需求與使用者故事"""
@@ -392,13 +292,13 @@ class KGConstructor:
         
         return actor_relations
 
-    def kg_construction_pipeline(self, document_contents: list, group: str) -> TripleList:
+    def kg_construction_pipeline(self, document_contents: list, entity_prompt: str, triple_prompt: str, group: str) -> TripleList:
         """建立知識圖譜的流程"""
         doc_entity_pairs = list()
         page_entities_list = list()
 
         with ThreadPoolExecutor(max_workers=3) as executor:
-            future_to_doc = {executor.submit(self.entities_extraction, prompts.ENTITY_PROMPT_4_SDD, content): content for content in document_contents}
+            future_to_doc = {executor.submit(self.entities_extraction, entity_prompt, content): content for content in document_contents}
             
             for future in as_completed(future_to_doc):
                 doc = future_to_doc[future]
@@ -411,15 +311,12 @@ class KGConstructor:
                 except Exception as e:
                     print(f"實體抽取 Exception: {e}")
         
-        with open(f"md_files\\groups\\{group}\\doc_entities_sdd.json", 'w', encoding="utf-8") as f:
-            json.dump(page_entities_list, f, indent=2, ensure_ascii=False)
-
         print("實體抽取完成")
         list_of_TripleList = list()
         
         with ThreadPoolExecutor(max_workers=2) as executor:
             future_to_relation = {
-                executor.submit(self.relations_extraction, prompts.TRIPLE_PROMPT_4_SDD, doc, entities): doc 
+                executor.submit(self.relations_extraction, triple_prompt, doc, entities): doc 
                 for doc, entities in doc_entity_pairs if entities
             }
             
@@ -431,14 +328,9 @@ class KGConstructor:
                 except Exception as e:
                     print(f"關係抽取 Exception: {e}")
 
-        data_to_save = [t.model_dump(mode="json") for triples in list_of_TripleList for t in triples.triples]
-        with open(f"md_files\\groups\\{group}\\doc_triples_sdd.json", 'w', encoding="utf-8") as f:
-            json.dump(data_to_save, f, indent=2, ensure_ascii=False)
-        
+        data_to_save = [t.model_dump(mode="json") for triples in list_of_TripleList for t in triples.triples]        
         print("關係抽取完成")
         triple_list = TripleList(triples=data_to_save)
-        del list_of_TripleList
-        gc.collect()
 
         return triple_list
 
@@ -458,7 +350,7 @@ class KGConstructor:
                     print(f"文件實體抽取 Exception: {e}")
 
         data_to_save = [t.model_dump(mode="json") for entities in list_of_EntityList for t in entities.entities]
-        with open(f"md_files\\groups\\{group}\\doc_entities_{doc_type.lower()}.json", 'w', encoding="utf-8") as f:
+        with open(f"files\\doc\\{group}\\doc_entities_{doc_type.lower()}.json", 'w', encoding="utf-8") as f:
             json.dump(data_to_save, f, indent=2, ensure_ascii=False)
 
         print("文件實體抽取完成")
@@ -510,20 +402,7 @@ class KGConstructor:
         confident_us_entities = [Entity(**item) for item in confident_us]
         fr_list_entities = [Entity(**item) for item in fr_list]
 
-        # print("向量配對的 US：")
-        # for i, d in enumerate(confident_us_entities):
-        #     print(f"[{i+1}/{len(confident_us_entities)}]:\n{d}")
-        #     print("-"*30)
-        
-        data_to_upload = list()
-
-        # print("LLM 配對的 US 數量：", len(llm_matches))
-        # for i, d in enumerate(llm_matches):
-        #     print(f"[{i+1}/{len(llm_matches)}]:\n{d}")
-        #     print("-"*30)
-
-        # data_to_upload = confident_us_entities + llm_matches + fr_list_entities   # 向量的
-        data_to_upload = confident_us_entities + fr_list_entities   # LLM
+        data_to_upload = confident_us_entities + fr_list_entities
 
         for i, d in enumerate(data_to_upload):
             print(f"[{i+1}/{len(data_to_upload)}]:\n{d}")
@@ -533,23 +412,44 @@ class KGConstructor:
 
         # 保存
         data_to_save = [data.model_dump() for data in data_to_upload]
-        with open(f"md_files\\groups\\{group}\\doc_entities_pairs_srd.json", 'w', encoding="utf-8") as f:
+        with open(f"files\\doc\\{group}\\doc_entities_pairs_srd.json", 'w', encoding="utf-8") as f:
             json.dump(data_to_save, f, indent=2, ensure_ascii=False)
 
         return entity_list
 
 if __name__ == '__main__':
-    source_file = "海大教室借用平台-測試文件.md"
-    chapter_num = 11
-    doc_type = "STD"
-    group = "第三組"
+    parser = argparse.ArgumentParser(description="知識圖譜建立流程")
+    parser.add_argument("--textbook", action="store_true", help="建立課程教材的知識圖譜")
+    parser.add_argument("doc_type", nargs="?", choices=["SRD", "SDD", "STD"], default=None, help="開發文件類型")
+    parser.add_argument("group", nargs="?", default="test", help="專案組別")
+    parser.add_argument("uploader", nargs="?", default=None, help="上傳者")
+    parser.add_argument("file_path", nargs="?", default=None, help="文件路徑")
+    args = parser.parse_args()
+
+    source_file = args.file_path
+    doc_type = args.doc_type
+    group = args.group
+    uploader = args.uploader
+
+    print(f"路徑: {source_file}\n類型: {doc_type}\n組別: {group}\n上傳者: {uploader}")
+
+    file_path = f"files\\doc\\{group}\\{source_file}"
+    print(file_path)
 
     try:
-        with open(f"md_files\\document\\{source_file}", 'r', encoding='utf-8') as input_file:
+        with open(file_path, 'r', encoding='utf-8') as input_file:
             md_content = input_file.read()
     except FileNotFoundError:
         print("Error: The specified file was not found.")
         sys.exit(0)
+
+    # pdf 轉 markdown
+    # suffix = Path(file_path).suffix.lower()
+    # if suffix == ".pdf":
+    #     md_content = file_processor.pdf2md(file_path)
+    #     save_path = file_path.replace(".pdf", ".md")
+    #     with open(save_path, "w", encoding="utf-8") as f:
+    #         f.write(md_content)
  
     cleaned_md = file_processor.clean_markdown(md_content)
     cleaned_md = file_processor.remove_specific_sections(cleaned_md)
@@ -560,65 +460,42 @@ if __name__ == '__main__':
         table_extracted_string = file_processor.replace_tables_in_text(doc.page_content)
         document_contents.append(table_extracted_string)
 
-    # document_content = '\n+++\n'.join(document_contents)
-    # with open(f"md_files\\document\\processed_std_doc_g7.md", 'w', encoding='utf-8') as f:
-    #     f.write(document_content)
-
     constructor = KGConstructor()
     importer = Neo4jImporter(uri=NEO4J_URI, username="neo4j", password=NEO4J_PASSWORD)
     try:
         if importer.connect():
+            if args.textbook:
+                triple_list = constructor.kg_construction_pipeline(document_contents, prompts.ENTITY_PROMPT_4_TEXTBOOK, prompts.TRIPLE_PROMPT_4_TEXTBOOK, group)
+                is_success = importer.upload_doc_triples(triple_list, source_file, doc_type, group, uploader)
+
             # =====建立知識圖譜 (實體+關係)=====
             if doc_type == "SDD":
-                triple_list = constructor.kg_construction_pipeline(document_contents)
-                is_success = importer.upload_doc_triples(triple_list, source_file, doc_type, group)
+                triple_list = constructor.kg_construction_pipeline(document_contents, prompts.ENTITY_PROMPT_4_SDD, prompts.TRIPLE_PROMPT_4_SDD, group)
+                is_success = importer.upload_doc_triples(triple_list, source_file, doc_type, group, uploader)
                 is_success = importer.link_references_to_requirements("API", doc_type, group, "實作需求")
 
             # =====提取需求文件實體&配對=====
             elif doc_type == "SRD":
                 # 抽實體
-                entity_list = constructor.entities_extraction_pipeline(document_contents, doc_type, prompts.ENTITY_PROMPT_4_SRD)
+                entity_list = constructor.entities_extraction_pipeline(document_contents, doc_type, prompts.ENTITY_PROMPT_4_SRD, group)
                 # 配對
-                entity_list = constructor.match_fr_to_us_pipeline(entity_list)
-                
-                # ======直接開啟抽取好的 std entities======
-                # with open("md_files\\JSON\\kgs\\doc\\doc_entities_g3_srd.json", 'r', encoding='utf-8') as f:
-                #     entity_dict = json.load(f)
-                # entity_list = EntityList(entities=entity_dict)
-
-                is_success = importer.upload_entities(entity_list, source_file, doc_type, group)
+                entity_list = constructor.match_fr_to_us_pipeline(entity_list, group)
+                is_success = importer.upload_entities(entity_list, source_file, doc_type, group, uploader)
                 is_success = importer.link_references_to_requirements("UserStory", doc_type, group, "滿足")
                 # 操作角色
                 actor_relations = constructor.create_actor_relationships(entity_list)
                 triple_list = TripleList(triples=actor_relations)
-                is_success = importer.upload_doc_triples(triple_list, source_file, doc_type, group)
+                is_success = importer.upload_doc_triples(triple_list, source_file, doc_type, group, uploader)
             
             # =====提取測試文件實體&連接需求文件=====    
             elif doc_type == "STD":
                 # 抽實體
-                entity_list = constructor.entities_extraction_pipeline(document_contents, doc_type, prompts.ENTITY_PROMPT_4_STD)
-                is_success = importer.upload_entities(entity_list, source_file, doc_type, group)
+                entity_list = constructor.entities_extraction_pipeline(document_contents, doc_type, prompts.ENTITY_PROMPT_4_STD, group)
+                is_success = importer.upload_entities(entity_list, source_file, doc_type, group, uploader)
                 is_success = importer.link_references_to_requirements("TestCase", doc_type, group, "驗證")
                 
-            # is_success = importer.upload_textbook_triples(triple_list, source_file)
             print(f"上傳結果：{is_success}")
     except Exception as e:
         print(f"建立【{doc_type}】知識圖譜時遇到錯誤：{e}")
     finally:
         importer.close()
-
-
-    # ======直接開啟抽取好的KG======
-
-    # with open("md_files\\JSON\\kgs\\doc\\doc_triples_g7_sdd.json", 'r', encoding='utf-8') as f:
-    #     triple_dict = json.load(f)
-    # triple_list = TripleList(triples=triple_dict)
-
-
-
-    # ======連接US跟FR======
-
-
-    # ======上傳KG======
-    
-

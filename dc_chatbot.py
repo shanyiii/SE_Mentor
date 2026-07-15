@@ -67,20 +67,6 @@ class QuizView(discord.ui.View):
         """
 
     def split_message(self, text: str, limit: int = 1500):
-        # print("original note:\n", text)
-        # if len(text) < limit:
-        #     return [text]
-        # # discord 一則訊息限制長度為 2000 字，如果生成內容太長就截成多段
-        # split_by_header = file_processor.md_splitter(text)
-        # temp_text = ""
-        # final_text = list()
-        # for header_content in split_by_header:
-        #     buffer_text = temp_text + "\n" + header_content.page_content
-        #     if len(buffer_text) > limit:
-        #         final_text.append(temp_text)
-        #         temp_text = ""
-        #     temp_text = temp_text + "\n" + header_content.page_content
-        # return final_text
         return [
             text[i:i+limit]
             for i in range(0, len(text), limit)
