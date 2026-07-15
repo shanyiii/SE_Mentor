@@ -21,7 +21,7 @@ class StudentProfile(Document):
   """學生基本資訊"""
   discord_id: int
   name: str
-  group: str = None
+  group:  str | None = None
   joined_at: datetime = Field(default_factory=datetime.now)
   
   class Settings:

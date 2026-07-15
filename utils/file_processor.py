@@ -27,15 +27,16 @@ set_env(
     }
 )
 
-def pdf2md(file_path, chapter):
+def pdf2md(file_path, chapter=None):
     converter = PdfConverter(
         artifact_dict=create_model_dict(),
     )
     rendered = converter(file_path)
     markdown_output = rendered.markdown
-    output_name = f"md_files\\{chapter}_markdown.md"
-    with open(output_name, "w", encoding="utf-8") as f:
-        f.write(markdown_output)
+    return markdown_output
+    # output_name = f"md_files\\{chapter}_markdown.md"
+    # with open(output_name, "w", encoding="utf-8") as f:
+    #     f.write(markdown_output)
 
 def md_splitter(md_content: str, with_recursive: bool = False):
     headers_to_split_on = [  

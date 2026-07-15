@@ -3,6 +3,7 @@ import asyncio, os
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from pathlib import Path
 
 from discord.ext import commands
 from discord import app_commands
@@ -37,9 +38,10 @@ async def run_blocking(func, *args, **kwargs):
 
 # ----- Button UI -----
 class QuizView(discord.ui.View):
-    def __init__(self, questions: list, user_id: int):
+    def __init__(self, questions: list, user_id: int, user_name: str):
         super().__init__(timeout=180)
         self.user_id = user_id
+        self.user_name = user_name
         self.questions = questions
         self.answer_history = ""
         self.learning_pp = list()
@@ -84,8 +86,13 @@ class QuizView(discord.ui.View):
             for i in range(0, len(text), limit)
         ]
     
-    async def update_profile(self, user_id: int, all_correct: bool, concepts: list):
+    async def update_profile(self, user_name: str, user_id: int, all_correct: bool, concepts: list):
         student = await StudentProfile.find_one(StudentProfile.discord_id == user_id)
+        if not student:
+            await StudentProfile(
+                discord_id=user_id,
+                name=user_name
+            ).insert()
         profile = await LearningProfile.find_one(LearningProfile.student.discord_id == user_id, fetch_links=True)
 
         if profile:
@@ -175,7 +182,7 @@ class QuizView(discord.ui.View):
 
             # await interaction.response.defer(ephemeral=True)
             if len(self.learning_pp) > 0:
-                await self.update_profile(self.user_id, False, self.learning_pp)
+                await self.update_profile(self.user_name, self.user_id, False, self.learning_pp)
 
                 msg = await interaction.followup.send("正在生成筆記…")
                 genetared_note = await self.get_note()
@@ -189,7 +196,7 @@ class QuizView(discord.ui.View):
                 for chunk in chunks[1:]:
                     await interaction.followup.send(chunk)
             else:
-                await self.update_profile(self.user_id, True, self.learned_concepts)
+                await self.update_profile(self.user_name, self.user_id, True, self.learned_concepts)
         else:
             # 下一題
             await interaction.response.edit_message(
@@ -223,7 +230,7 @@ def printout_questions(question_list):
 
 def build_knowledge_graph(source_file: str, doc_type: str, group: str, uploader: str):
     try:
-        with open(f"md_files\\groups\\{group}\\{source_file}", 'r', encoding='utf-8') as input_file:
+        with open(source_file, 'r', encoding='utf-8') as input_file:
             md_content = input_file.read()
     except FileNotFoundError:
         print("Error: The specified file was not found.")
@@ -247,36 +254,36 @@ def build_knowledge_graph(source_file: str, doc_type: str, group: str, uploader:
         if importer.connect():
             # =====建立知識圖譜 (實體+關係)=====
             if doc_type == "SDD":
-                # triple_list = constructor.kg_construction_pipeline(document_contents, group)
+                triple_list = constructor.kg_construction_pipeline(document_contents, group)
                 print(f"【{doc_type}】三元組抽取完成")
-                # is_success = importer.upload_doc_triples(triple_list, source_file, doc_type, group, uploader)
-                # is_success = importer.link_references_to_requirements("API", doc_type, group, "實作需求")
+                is_success = importer.upload_doc_triples(triple_list, source_file, doc_type, group, uploader)
+                is_success = importer.link_references_to_requirements("API", doc_type, group, "實作需求")
 
             # =====提取需求文件實體&配對=====
             elif doc_type == "SRD":
                 # 抽實體
-                # entity_list = constructor.entities_extraction_pipeline(document_contents, doc_type, prompts.ENTITY_PROMPT_4_SRD, group)
+                entity_list = constructor.entities_extraction_pipeline(document_contents, doc_type, prompts.ENTITY_PROMPT_4_SRD, group)
                 print(f"【{doc_type}】實體抽取完成")
                 # 配對
-                # entity_list = constructor.match_fr_to_us_pipeline(entity_list, group)
+                entity_list = constructor.match_fr_to_us_pipeline(entity_list, group)
                 print(f"【{doc_type}】實體配對完成")
-                # is_success = importer.upload_entities(entity_list, source_file, doc_type, group, uploader)
-                # is_success = importer.link_references_to_requirements("UserStory", doc_type, group, "滿足")
+                is_success = importer.upload_entities(entity_list, source_file, doc_type, group, uploader)
+                is_success = importer.link_references_to_requirements("UserStory", doc_type, group, "滿足")
                 # 操作角色
-                # actor_relations = constructor.create_actor_relationships(entity_list)
+                actor_relations = constructor.create_actor_relationships(entity_list)
                 print(f"【{doc_type}】角色抽取完成")
-                # triple_list = TripleList(triples=actor_relations)
-                # is_success = importer.upload_doc_triples(triple_list, source_file, doc_type, group, uploader)
+                triple_list = TripleList(triples=actor_relations)
+                is_success = importer.upload_doc_triples(triple_list, source_file, doc_type, group, uploader)
             
             # =====提取測試文件實體&連接需求文件=====    
             elif doc_type == "STD":
                 # 抽實體
-                # entity_list = constructor.entities_extraction_pipeline(document_contents, doc_type, prompts.ENTITY_PROMPT_4_STD, group)
+                entity_list = constructor.entities_extraction_pipeline(document_contents, doc_type, prompts.ENTITY_PROMPT_4_STD, group)
                 print(f"【{doc_type}】實體抽取完成")
-                # is_success = importer.upload_entities(entity_list, source_file, doc_type, group, uploader)
-                # is_success = importer.link_references_to_requirements("TestCase", doc_type, group, "驗證")
+                is_success = importer.upload_entities(entity_list, source_file, doc_type, group, uploader)
+                is_success = importer.link_references_to_requirements("TestCase", doc_type, group, "驗證")
                 
-            # print(f"上傳結果：{is_success}")
+            print(f"上傳結果：{is_success}")
     except Exception as e:
         print(f"建立【{doc_type}】知識圖譜時遇到錯誤：{e}")
     finally:
@@ -288,16 +295,9 @@ def build_knowledge_graph(source_file: str, doc_type: str, group: str, uploader:
 async def quiz(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     try:
-        student = await StudentProfile.find_one(StudentProfile.discord_id == interaction.user.id)
-        if not student:
-            await StudentProfile(
-                discord_id=interaction.user.id,
-                name=interaction.user.name
-            ).insert()
-
         question_list = await quiz_generator_kg.get_quizes()
         print(f"使用者【{interaction.user.name}】已使用診斷測驗！")
-        view = QuizView(question_list, interaction.user.id)
+        view = QuizView(question_list, interaction.user.id, interaction.user.name)
         await interaction.followup.send(view.get_question(), view=view)
     
     except Exception as e:
@@ -378,7 +378,7 @@ async def course_qa(interaction: discord.Interaction, question: str):
             name=interaction.user.name
         ).insert()
 
-    chat_logs = await ChatLogs.find_one(ChatLogs.student == student)
+    chat_logs = await ChatLogs.find_one(ChatLogs.student.discord_id == student.discord_id, fetch_links=True)
     if chat_logs:
         chat_logs.course_logs.append(
             LogInfo(
@@ -427,6 +427,7 @@ async def upload_document(interaction: discord.Interaction, file: discord.Attach
         student.group = group
         await student.save()
 
+
     # 儲存檔案
     file_path = f"md_files\\groups\\{group}"
     if not os.path.isdir(file_path):
@@ -434,8 +435,15 @@ async def upload_document(interaction: discord.Interaction, file: discord.Attach
     save_path = f"md_files\\groups\\{group}\\{file.filename}"
     await file.save(save_path)
 
+    suffix = Path(save_path).suffix.lower()
+    if suffix == ".pdf":
+        mk_file = file_processor.pdf2md(save_path)
+        save_path = f"md_files\\groups\\{group}\\{file.filename}".replace(".pdf", ".md")
+        with open(save_path, "w", encoding="utf-8") as f:
+            f.write(mk_file)
+
     # 建圖
-    await run_blocking(build_knowledge_graph, source_file=file.filename, doc_type=doc_type.value, group=group, uploader=interaction.user.name)
+    await run_blocking(build_knowledge_graph, source_file=save_path, doc_type=doc_type.value, group=group, uploader=interaction.user.name)
     # 向量
     await haystack_service.upload_doc_2_vectordb(file_path=save_path, doc_type=doc_type.value, group_name=group, uploader=interaction.user.name)
 
