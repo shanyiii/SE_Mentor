@@ -420,10 +420,10 @@ class KGConstructor:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="知識圖譜建立流程")
     parser.add_argument("--textbook", action="store_true", help="建立課程教材的知識圖譜")
+    parser.add_argument("file_path", default=None, help="文件路徑")
     parser.add_argument("doc_type", nargs="?", choices=["SRD", "SDD", "STD"], default=None, help="開發文件類型")
     parser.add_argument("group", nargs="?", default="test", help="專案組別")
     parser.add_argument("uploader", nargs="?", default=None, help="上傳者")
-    parser.add_argument("file_path", nargs="?", default=None, help="文件路徑")
     args = parser.parse_args()
 
     source_file = args.file_path
@@ -431,9 +431,7 @@ if __name__ == '__main__':
     group = args.group
     uploader = args.uploader
 
-    print(f"路徑: {source_file}\n類型: {doc_type}\n組別: {group}\n上傳者: {uploader}")
-
-    file_path = f"files\\doc\\{group}\\{source_file}"
+    file_path = f"files\\doc\\{group}\\{source_file}"   # 根據自己的目錄修改
     print(file_path)
 
     try:
@@ -464,35 +462,38 @@ if __name__ == '__main__':
     importer = Neo4jImporter(uri=NEO4J_URI, username="neo4j", password=NEO4J_PASSWORD)
     try:
         if importer.connect():
+            # 教材
             if args.textbook:
                 triple_list = constructor.kg_construction_pipeline(document_contents, prompts.ENTITY_PROMPT_4_TEXTBOOK, prompts.TRIPLE_PROMPT_4_TEXTBOOK, group)
                 is_success = importer.upload_doc_triples(triple_list, source_file, doc_type, group, uploader)
+                
+            # 開發文件
+            else:
+                # =====建立知識圖譜 (實體+關係)=====
+                if doc_type == "SDD":
+                    triple_list = constructor.kg_construction_pipeline(document_contents, prompts.ENTITY_PROMPT_4_SDD, prompts.TRIPLE_PROMPT_4_SDD, group)
+                    is_success = importer.upload_doc_triples(triple_list, source_file, doc_type, group, uploader)
+                    is_success = importer.link_references_to_requirements("API", doc_type, group, "實作需求")
 
-            # =====建立知識圖譜 (實體+關係)=====
-            if doc_type == "SDD":
-                triple_list = constructor.kg_construction_pipeline(document_contents, prompts.ENTITY_PROMPT_4_SDD, prompts.TRIPLE_PROMPT_4_SDD, group)
-                is_success = importer.upload_doc_triples(triple_list, source_file, doc_type, group, uploader)
-                is_success = importer.link_references_to_requirements("API", doc_type, group, "實作需求")
-
-            # =====提取需求文件實體&配對=====
-            elif doc_type == "SRD":
-                # 抽實體
-                entity_list = constructor.entities_extraction_pipeline(document_contents, doc_type, prompts.ENTITY_PROMPT_4_SRD, group)
-                # 配對
-                entity_list = constructor.match_fr_to_us_pipeline(entity_list, group)
-                is_success = importer.upload_entities(entity_list, source_file, doc_type, group, uploader)
-                is_success = importer.link_references_to_requirements("UserStory", doc_type, group, "滿足")
-                # 操作角色
-                actor_relations = constructor.create_actor_relationships(entity_list)
-                triple_list = TripleList(triples=actor_relations)
-                is_success = importer.upload_doc_triples(triple_list, source_file, doc_type, group, uploader)
-            
-            # =====提取測試文件實體&連接需求文件=====    
-            elif doc_type == "STD":
-                # 抽實體
-                entity_list = constructor.entities_extraction_pipeline(document_contents, doc_type, prompts.ENTITY_PROMPT_4_STD, group)
-                is_success = importer.upload_entities(entity_list, source_file, doc_type, group, uploader)
-                is_success = importer.link_references_to_requirements("TestCase", doc_type, group, "驗證")
+                # =====提取需求文件實體&配對=====
+                elif doc_type == "SRD":
+                    # 抽實體
+                    entity_list = constructor.entities_extraction_pipeline(document_contents, doc_type, prompts.ENTITY_PROMPT_4_SRD, group)
+                    # 配對
+                    entity_list = constructor.match_fr_to_us_pipeline(entity_list, group)
+                    is_success = importer.upload_entities(entity_list, source_file, doc_type, group, uploader)
+                    is_success = importer.link_references_to_requirements("UserStory", doc_type, group, "滿足")
+                    # 操作角色
+                    actor_relations = constructor.create_actor_relationships(entity_list)
+                    triple_list = TripleList(triples=actor_relations)
+                    is_success = importer.upload_doc_triples(triple_list, source_file, doc_type, group, uploader)
+                
+                # =====提取測試文件實體&連接需求文件=====    
+                elif doc_type == "STD":
+                    # 抽實體
+                    entity_list = constructor.entities_extraction_pipeline(document_contents, doc_type, prompts.ENTITY_PROMPT_4_STD, group)
+                    is_success = importer.upload_entities(entity_list, source_file, doc_type, group, uploader)
+                    is_success = importer.link_references_to_requirements("TestCase", doc_type, group, "驗證")
                 
             print(f"上傳結果：{is_success}")
     except Exception as e:
