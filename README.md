@@ -12,6 +12,12 @@ uv sync
 .venv\Scripts\activate
 ```
 
+Docker 的 yaml 要修改 Noe4j 的密碼：
+
+```
+NEO4J_AUTH=neo4j/<密碼>
+```
+
 ### 2. 設定 config.py
 
 ```
@@ -32,6 +38,18 @@ DISCORD_TOKEN = "<discord-bot-token>"
 
 # Neo4j 資料庫連線密碼
 NEO4J_PASSWORD = "<your-neo4j-password>"
+```
+
+### 3. Mongodb
+
+記得建立一個 Mongodb，collection 的名稱跟初始化資料庫的函式參數一樣。
+
+```python!
+# dc_chatbot.py
+
+@bot.event
+async def setup_hook():
+    await init_mongo(<collection_name>)
 ```
 
 ## 使用說明
