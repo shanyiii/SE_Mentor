@@ -37,6 +37,7 @@ document_store = Neo4jDocumentStore(
 )
 
 async def get_core_nodes(chapter: str):
+    # 從指定章節的知識圖譜中取得關係數最多的前五個節點
     cypher = f"""
         MATCH (n:Concept)
         WHERE '{chapter}.pdf' IN n.source_files
@@ -58,6 +59,7 @@ async def get_core_nodes(chapter: str):
     return records
 
 async def generate_quiz_kg(chapter: str) -> str:
+    # 生成測驗題目
     core_nodes = await get_core_nodes(chapter)
     if core_nodes:
         core_nodes_str = '、'.join(core_nodes)
@@ -123,8 +125,9 @@ async def generate_quiz_kg(chapter: str) -> str:
     return q_dicts
 
 async def upload_quiz_to_mongo():
+    # 生成測驗題目並儲存於資料庫中
     quiz_client = await init_mongo("TABotAI_quiz")
-    core_chapters = ["[10]進階軟體測試", "[01]軟體危機與軟體流程"]
+    core_chapters = ["[10]進階軟體測試", "[01]軟體危機與軟體流程"]    # 要生成題目的章節
 
     diagnosis_quizes = list()
 
@@ -163,17 +166,18 @@ async def get_quizes() -> list:
     return question_list
 
 async def upsert_test(name):
+    # 測試更新學習檔案用
     quiz_client = await init_mongo("TABotAI_quiz")
 
     profile = await LearningProfile.find_one(LearningProfile.student_name == name)
     if profile is None:
-        await LearningProfile(student_name=name, student_id='11357009').insert()
+        await LearningProfile(student_name=name, student_id='12345678').insert()
 
 if __name__ == '__main__':    
-    # asyncio.run(upload_quiz_to_mongo())
+    asyncio.run(upload_quiz_to_mongo())
     # asyncio.run(get_quizes())
 
-    asyncio.run(upsert_test('shanyiii'))
+    # asyncio.run(upsert_test('shanyiii'))
 
     # print(inspect.getsource(Neo4jEmbeddingRetriever))
     
