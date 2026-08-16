@@ -124,14 +124,13 @@ async def generate_quiz_kg(chapter: str) -> str:
     q_dicts = [dict(q) for q in output_dicts["questions"]]
     return q_dicts
 
-async def upload_quiz_to_mongo():
+async def upload_quiz_to_mongo(chapters: list[str]):
     # 生成測驗題目並儲存於資料庫中
     quiz_client = await init_mongo("TABotAI_quiz")
-    core_chapters = ["[10]進階軟體測試", "[01]軟體危機與軟體流程"]    # 要生成題目的章節
 
     diagnosis_quizes = list()
 
-    for chapter in core_chapters:
+    for chapter in chapters:
         print(f"正在生成 {chapter} 的題目...")
         quizes = await generate_quiz_kg(chapter)
         # print(quizes)
@@ -174,7 +173,8 @@ async def upsert_test(name):
         await LearningProfile(student_name=name, student_id='12345678').insert()
 
 if __name__ == '__main__':    
-    asyncio.run(upload_quiz_to_mongo())
+    chapters = ["[01]軟體危機與軟體流程", "[02]基礎需求工程", "[03]使用者故事分析", "[04]敏捷開發方法", "[05]基礎專案管理與看板", "[06]版本控制", "[07]軟體設計-系統設計", "[08]軟體設計-模組設計", "[09]軟體測試", "[10]進階軟體測試", "[11]DevOps自動化建置管理"]
+    asyncio.run(upload_quiz_to_mongo(chapters))
     # asyncio.run(get_quizes())
 
     # asyncio.run(upsert_test('shanyiii'))
